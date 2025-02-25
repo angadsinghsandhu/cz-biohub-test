@@ -69,7 +69,7 @@ minutes=$(( (elapsed % 3600) / 60 ))
 seconds=$((elapsed % 60))
 echo "Setup Time elapsed: ${days}d ${hours}h ${minutes}m ${seconds}s"
 
-INFER_SCRIPT="test.py"
+INFER_SCRIPT="test"
 
 srun python -m $INFER_SCRIPT
 

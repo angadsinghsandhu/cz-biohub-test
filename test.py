@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 import os
+import json
 import numpy as np
 import scanpy as sc
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel, get_cosine_schedule_with_warmup
 import optuna
 import matplotlib.pyplot as plt
 import warnings
@@ -34,7 +34,7 @@ organism = "homo_sapiens"
 measurement_name = "RNA"
 emb_names = ["geneformer"]
 
-# Open Census and query for CNS cells; we load cell_type, donor_id, and sex information.
+# Open Census and query for CNS cells; load cell_type, donor_id, and sex information.
 with cellxgene_census.open_soma(census_version=census_version) as census:
     adata = cellxgene_census.get_anndata(
         census,
@@ -50,13 +50,15 @@ print("Number of cells loaded:", adata.n_obs)
 sc.pp.neighbors(adata, use_rep="geneformer")
 sc.tl.umap(adata)
 sc.pl.umap(adata, color="cell_type", title="UMAP of Geneformer Embeddings", show=False)
-plt.savefig(os.path.join("output", "umap_geneformer.png"))
+umap_path = os.path.join("output", "umap_geneformer.png")
+plt.savefig(umap_path)
 plt.close()
 
 # ------------------------------
 # 2. Textual Embedding Extraction
 # ------------------------------
-# Load pretrained tokenizer and model locally from the "models" directory.
+# Load pretrained tokenizer and model (using BioBERT) from local path.
+# (Alternatively, you could experiment with a deeper model like SciBERT)
 model_path = "/home/asandhu9/cz-biohub-test/models/dmis-lab/biobert/1.1"
 tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
 text_model = AutoModel.from_pretrained(model_path, local_files_only=True).to(device)
@@ -82,7 +84,7 @@ textual_embeddings = np.stack(textual_embeddings, axis=0)
 print("Textual embeddings shape:", textual_embeddings.shape)
 
 # ------------------------------
-# 3. Model Architecture
+# 3. Model Architecture with Tokenization & Deeper Fusion
 # ------------------------------
 class GradientReversal(torch.autograd.Function):
     """
@@ -101,14 +103,14 @@ def grad_reverse(x, lambda_=1.0):
 
 class CrossAttentionBlock(nn.Module):
     """
-    Multi-head cross-attention block.
-    Query: Geneformer embeddings.
-    Key/Value: Textual embeddings.
+    Multi-head cross-attention block using batch_first mode.
+    Query: tokens from one modality.
+    Key/Value: tokens from the other modality.
     """
-    def __init__(self, d_model, n_heads, dropout=0.1):
+    def __init__(self, d_model, n_heads, dropout=0.1, batch_first=True):
         super(CrossAttentionBlock, self).__init__()
         print(f"Initializing CrossAttentionBlock with embed_dim: {d_model}, num_heads: {n_heads}")
-        self.attention = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, dropout=dropout)
+        self.attention = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, dropout=dropout, batch_first=batch_first)
         self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
         
@@ -119,55 +121,85 @@ class CrossAttentionBlock(nn.Module):
 
 class PerceiverResampler(nn.Module):
     """
-    Perceiver Resampler that uses latent vectors to summarize high-dimensional input.
+    Perceiver Resampler that uses latent vectors to summarize input features.
+    Now adapted to batch_first inputs.
     """
-    def __init__(self, input_dim, num_latents, latent_dim, n_heads, dropout=0.1):
+    def __init__(self, input_dim, num_latents, latent_dim, n_heads, dropout=0.1, batch_first=True):
         super(PerceiverResampler, self).__init__()
         self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
-        # Ensure latent_dim is divisible by n_heads (n_heads is fixed to 8)
-        self.cross_attn = CrossAttentionBlock(d_model=latent_dim, n_heads=n_heads, dropout=dropout)
+        self.cross_attn = CrossAttentionBlock(d_model=latent_dim, n_heads=n_heads, dropout=dropout, batch_first=batch_first)
         self.input_proj = nn.Linear(input_dim, latent_dim) if input_dim != latent_dim else nn.Identity()
     
     def forward(self, x):
+        # x: (batch, input_dim)
         x_proj = self.input_proj(x)  # (batch, latent_dim)
-        x_proj = x_proj.unsqueeze(0)  # (1, batch, latent_dim)
-        batch_size = x.size(0)
-        latents_expanded = self.latents.unsqueeze(1).expand(-1, batch_size, -1)
-        out, attn_weights = self.cross_attn(latents_expanded, x_proj, x_proj)
-        out = out.mean(dim=0)
+        # Expand latents to match batch size: (batch, num_latents, latent_dim)
+        batch = x.size(0)
+        latents_expanded = self.latents.unsqueeze(0).expand(batch, -1, -1)
+        # Use the projected x as key/value by unsqueezing to (batch, 1, latent_dim)
+        x_proj_unsq = x_proj.unsqueeze(1)
+        out, attn_weights = self.cross_attn(latents_expanded, x_proj_unsq, x_proj_unsq)
+        # Aggregate latent tokens by mean pooling
+        out = out.mean(dim=1)
         return out, attn_weights
 
 class MultiModalModel(nn.Module):
     """
     Multimodal model integrating Geneformer (omics) and textual embeddings.
-    Also includes an adversarial branch to control for the sex variable.
+    Uses tokenization of the flat embeddings to yield multiple tokens per cell.
+    Also includes a feedforward block after cross-attention and an adversarial branch.
     """
     def __init__(self, 
                  omics_dim=512, 
                  text_dim=768, 
                  fusion_dim=256, 
                  n_heads=8, 
+                 num_tokens=8, 
                  num_latents=32, 
                  latent_dim=128, 
                  dropout=0.1,
                  adv_lambda=0.1,
                  num_donors=10):
         super(MultiModalModel, self).__init__()
-        self.omics_proj = nn.Linear(omics_dim, fusion_dim)
-        self.text_proj = nn.Linear(text_dim, fusion_dim)
-        self.cross_attn = CrossAttentionBlock(d_model=fusion_dim, n_heads=n_heads, dropout=dropout)
+        self.num_tokens = num_tokens
+        # Determine token dimensions (ensure divisibility)
+        self.omics_token_dim = omics_dim // num_tokens  # 512/8 = 64
+        self.text_token_dim = text_dim // num_tokens      # 768/8 = 96
+        # Project each token into the shared fusion space
+        self.omics_token_proj = nn.Linear(self.omics_token_dim, fusion_dim)
+        self.text_token_proj = nn.Linear(self.text_token_dim, fusion_dim)
+        
+        # Cross-attention block: let omics tokens attend to text tokens.
+        self.cross_attn = CrossAttentionBlock(d_model=fusion_dim, n_heads=n_heads, dropout=dropout, batch_first=True)
+        # Add an extra feedforward network for further processing.
+        self.ffn = nn.Sequential(
+            nn.Linear(fusion_dim, fusion_dim),
+            nn.ReLU(),
+            nn.Linear(fusion_dim, fusion_dim)
+        )
+        # After fusion, aggregate tokens by mean pooling.
+        # Pass aggregated representation to the Perceiver Resampler.
         self.resampler = PerceiverResampler(input_dim=fusion_dim, 
                                             num_latents=num_latents, 
                                             latent_dim=latent_dim, 
                                             n_heads=n_heads, 
-                                            dropout=dropout)
+                                            dropout=dropout,
+                                            batch_first=True)
+        # Classifier for donor ID
         self.classifier = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(latent_dim, latent_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(latent_dim // 2, num_donors)
         )
+        # Adversarial classifier for sex variable
         self.adv_classifier = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(latent_dim, latent_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
@@ -176,12 +208,21 @@ class MultiModalModel(nn.Module):
         self.adv_lambda = adv_lambda
         
     def forward(self, omics, text):
-        omics_feat = self.omics_proj(omics)  # (batch, fusion_dim)
-        text_feat = self.text_proj(text)     # (batch, fusion_dim)
-        omics_feat = omics_feat.unsqueeze(0)   # (1, batch, fusion_dim)
-        text_feat = text_feat.unsqueeze(0)     # (1, batch, fusion_dim)
-        fused_feat, attn_weights = self.cross_attn(omics_feat, text_feat, text_feat)
-        fused_feat = fused_feat.squeeze(0)
+        # omics: (batch, 512), text: (batch, 768)
+        batch = omics.size(0)
+        # Reshape into tokens
+        omics_tokens = omics.view(batch, self.num_tokens, self.omics_token_dim)   # (batch, num_tokens, 64)
+        text_tokens = text.view(batch, self.num_tokens, self.text_token_dim)      # (batch, num_tokens, 96)
+        # Project tokens into fusion space
+        omics_tokens = self.omics_token_proj(omics_tokens)  # (batch, num_tokens, fusion_dim)
+        text_tokens = self.text_token_proj(text_tokens)     # (batch, num_tokens, fusion_dim)
+        # Cross-attention: omics tokens attend to text tokens
+        fused_tokens, attn_weights = self.cross_attn(omics_tokens, text_tokens, text_tokens)
+        # Process with feedforward network
+        fused_tokens = self.ffn(fused_tokens)
+        # Aggregate tokens by averaging over the token dimension
+        fused_feat = fused_tokens.mean(dim=1)  # (batch, fusion_dim)
+        # Pass through the Perceiver Resampler
         latent, attn_resampler = self.resampler(fused_feat)
         donor_logits = self.classifier(latent)
         adv_input = grad_reverse(latent, self.adv_lambda)
@@ -211,16 +252,16 @@ donor_labels = [donor_map[d] for d in adata.obs["donor_id"]]
 sex_labels = [sex_map[s.lower()] if s.lower() in sex_map else 0 for s in adata.obs["sex"]]
 
 omics_data = adata.obsm["geneformer"]
-# textual_embeddings is already computed
+# textual_embeddings already computed above.
 
 dataset = SingleCellDataset(omics_data, textual_embeddings, donor_labels, sex_labels)
 batch_size = 64
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
 
 # ------------------------------
-# 5. Training Loop with Hyperparameter Optimization
+# 5. Training Loop with Enhanced Training Strategy
 # ------------------------------
-def train_model(model, dataloader, optimizer, scheduler, num_epochs=20, log_to_wandb=False):
+def train_model(model, dataloader, optimizer, scheduler, num_epochs=50, log_to_wandb=False):
     model.train()
     donor_criterion = nn.CrossEntropyLoss()
     adv_criterion = nn.CrossEntropyLoss()
@@ -235,7 +276,6 @@ def train_model(model, dataloader, optimizer, scheduler, num_epochs=20, log_to_w
         correct = 0
         total = 0
         
-        # Use tqdm for progress over batches
         for omics, text, donor_labels, sex_labels in tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}"):
             omics = omics.to(device)
             text = text.to(device)
@@ -249,6 +289,7 @@ def train_model(model, dataloader, optimizer, scheduler, num_epochs=20, log_to_w
             loss = loss_donor + loss_adv
             loss.backward()
             optimizer.step()
+            scheduler.step()  # Step the LR scheduler after each batch
             
             running_donor_loss += loss_donor.item() * omics.size(0)
             running_adv_loss += loss_adv.item() * omics.size(0)
@@ -264,7 +305,6 @@ def train_model(model, dataloader, optimizer, scheduler, num_epochs=20, log_to_w
         adv_losses.append(epoch_adv_loss)
         accuracies.append(epoch_acc)
         
-        scheduler.step()
         print(f"Epoch {epoch+1}/{num_epochs} - Donor Loss: {epoch_donor_loss:.4f} - Adv Loss: {epoch_adv_loss:.4f} - Accuracy: {epoch_acc:.4f}")
         
         if log_to_wandb:
@@ -279,10 +319,10 @@ def train_model(model, dataloader, optimizer, scheduler, num_epochs=20, log_to_w
 # 6. Hyperparameter Optimization with Optuna
 # ------------------------------
 def objective(trial):
+    # Use best hyperparameter search ranges; these will later be updated only if better ones are found.
     lr = trial.suggest_loguniform("lr", 1e-5, 1e-2)
     dropout = trial.suggest_uniform("dropout", 0.1, 0.5)
     num_latents = trial.suggest_int("num_latents", 16, 64)
-    # Ensure latent_dim is a multiple of 8
     latent_dim = trial.suggest_int("latent_dim", 64, 256, step=8)
     adv_lambda = trial.suggest_uniform("adv_lambda", 0.01, 0.5)
     
@@ -291,26 +331,30 @@ def objective(trial):
                                      text_dim=textual_embeddings.shape[1],
                                      fusion_dim=256,
                                      n_heads=8,
+                                     num_tokens=8,
                                      num_latents=num_latents,
                                      latent_dim=latent_dim,
                                      dropout=dropout,
                                      adv_lambda=adv_lambda,
                                      num_donors=num_donors).to(device)
     
-    optimizer_instance = optim.Adam(model_instance.parameters(), lr=lr)
-    scheduler_instance = optim.lr_scheduler.CosineAnnealingLR(optimizer_instance, T_max=20)
+    optimizer_instance = optim.Adam(model_instance.parameters(), lr=lr, weight_decay=1e-4)
+    total_steps = len(dataloader) * 5  # 5 epochs for each trial
+    warmup_steps = int(0.1 * total_steps)
+    scheduler_instance = get_cosine_schedule_with_warmup(optimizer_instance,
+                                                         num_warmup_steps=warmup_steps,
+                                                         num_training_steps=total_steps)
     
-    # For hyperparameter optimization, we do not log to wandb.
     _, _, accuracies = train_model(model_instance, dataloader, optimizer_instance, scheduler_instance, num_epochs=5, log_to_wandb=False)
     final_acc = accuracies[-1]
-    return -final_acc  # Optuna minimizes the objective
+    return -final_acc  # Minimization objective
 
 study = optuna.create_study()
 study.optimize(objective, n_trials=10)
-print("Best hyperparameters:", study.best_params)
+print("Best hyperparameters from Optuna:", study.best_params)
 
 # ------------------------------
-# 7. Final Training and Visualization with wandb Logging
+# 7. Final Training and Logging with wandb and Saving Hyperparameters
 # ------------------------------
 # Initialize wandb for the final run.
 best_params = study.best_params
@@ -321,19 +365,24 @@ model_instance = MultiModalModel(omics_dim=omics_data.shape[1],
                                  text_dim=textual_embeddings.shape[1],
                                  fusion_dim=256,
                                  n_heads=8,
+                                 num_tokens=8,
                                  num_latents=best_params["num_latents"],
                                  latent_dim=best_params["latent_dim"],
                                  dropout=best_params["dropout"],
                                  adv_lambda=best_params["adv_lambda"],
                                  num_donors=num_donors).to(device)
-optimizer_instance = optim.Adam(model_instance.parameters(), lr=best_params["lr"])
-scheduler_instance = optim.lr_scheduler.CosineAnnealingLR(optimizer_instance, T_max=20)
+optimizer_instance = optim.Adam(model_instance.parameters(), lr=best_params["lr"], weight_decay=1e-4)
+total_steps = len(dataloader) * 50  # 50 epochs final training
+warmup_steps = int(0.1 * total_steps)
+scheduler_instance = get_cosine_schedule_with_warmup(optimizer_instance,
+                                                     num_warmup_steps=warmup_steps,
+                                                     num_training_steps=total_steps)
 
-donor_losses, adv_losses, accuracies = train_model(model_instance, dataloader, optimizer_instance, scheduler_instance, num_epochs=20, log_to_wandb=True)
+donor_losses, adv_losses, accuracies = train_model(model_instance, dataloader, optimizer_instance, scheduler_instance, num_epochs=50, log_to_wandb=True)
 
-# Plot loss curves and accuracy; save the plot to the output directory.
-epochs = range(1, 21)
-plt.figure(figsize=(12, 4))
+# Save training curves and final accuracy figures.
+epochs = range(1, 51)
+plt.figure(figsize=(18, 5))
 plt.subplot(1, 3, 1)
 plt.plot(epochs, donor_losses, label="Donor Loss")
 plt.xlabel("Epoch")
@@ -355,31 +404,57 @@ plt.ylabel("Accuracy")
 plt.title("Donor ID Prediction Accuracy")
 plt.legend()
 plt.tight_layout()
-plt.savefig(os.path.join("output", "training_curves.png"))
+training_curves_path = os.path.join("output", "training_curves.png")
+plt.savefig(training_curves_path)
 plt.close()
 
 # Bonus: Visualize cross-attention weights from a sample batch.
+# Now that we have multiple tokens, average the attention weights over the batch to produce a heatmap.
 omics_sample, text_sample, _, _ = next(iter(dataloader))
 omics_sample = omics_sample.to(device)
 text_sample = text_sample.to(device)
 _, _, attn_weights, _ = model_instance(omics_sample, text_sample)
-attn_weights_np = attn_weights[0].detach().cpu().numpy()
+# attn_weights shape: (batch, query_tokens, key_tokens) from the first cross-attn block
+avg_attn = attn_weights.mean(dim=0).detach().cpu().numpy()  # shape: (num_tokens, num_tokens)
 plt.figure(figsize=(6, 4))
-plt.imshow(attn_weights_np, cmap="viridis", aspect="auto")
+plt.imshow(avg_attn, cmap="viridis", aspect="auto")
 plt.colorbar()
-plt.title("Cross-Attention Weights Heatmap")
-plt.xlabel("Key Position")
-plt.ylabel("Query Position")
-plt.savefig(os.path.join("output", "cross_attention_heatmap.png"))
+plt.title("Average Cross-Attention Weights")
+plt.xlabel("Key Token")
+plt.ylabel("Query Token")
+cross_attn_path = os.path.join("output", "cross_attention_heatmap.png")
+plt.savefig(cross_attn_path)
 plt.close()
 
 # ------------------------------
-# 8. Results Summary and Bonus Analysis
+# 8. Save Best Hyperparameters and Final Accuracy to JSON (only update if improved)
 # ------------------------------
-print("\nResults Summary:")
-print("- UMAP plot saved as 'output/umap_geneformer.png'")
-print("- Training curves saved as 'output/training_curves.png'")
-print("- Cross-attention heatmap saved as 'output/cross_attention_heatmap.png'")
-print("- Final donor ID prediction accuracy: {:.4f}".format(accuracies[-1]))
-wandb.log({"final_accuracy": accuracies[-1]})
+best_hyperparams_file = os.path.join("output", "best_hyperparameters.json")
+final_results = {
+    "best_params": best_params,
+    "final_accuracy": accuracies[-1]
+}
+if os.path.exists(best_hyperparams_file):
+    with open(best_hyperparams_file, "r") as f:
+        existing = json.load(f)
+    if final_results["final_accuracy"] > existing.get("final_accuracy", 0):
+        with open(best_hyperparams_file, "w") as f:
+            json.dump(final_results, f, indent=4)
+else:
+    with open(best_hyperparams_file, "w") as f:
+        json.dump(final_results, f, indent=4)
+
+# ------------------------------
+# 9. Final Deliverable Print Statements
+# ------------------------------
+final_accuracy = accuracies[-1]
+print("\nFinal Results Summary:")
+print(f"- Number of cells loaded: {adata.n_obs}")
+print(f"- UMAP plot saved at: {umap_path}")
+print(f"- Training curves saved at: {training_curves_path}")
+print(f"- Cross-attention heatmap saved at: {cross_attn_path}")
+print(f"- Best hyperparameters saved at: {best_hyperparams_file}")
+print(f"- Final donor ID prediction accuracy: {final_accuracy:.4f}")
+
+wandb.log({"final_accuracy": final_accuracy})
 wandb.finish()
