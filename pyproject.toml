@@ -1,0 +1,29 @@
+[project]
+name = "cz-biohub-test"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "notebook>=7.3.2",
+    "optuna>=4.2.1",
+    "pandas>=2.2.3",
+    "transformers>=4.47.1",
+    "torch==2.5.1+cu121",
+    "umap>=0.1.1",
+    "matplotlib>=3.10.0",
+    "scanpy>=1.11.0",
+    "cellxgene-census>=1.16.2",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu121" }
+]
+
+transformers = { git = "https://github.com/huggingface/transformers" }
