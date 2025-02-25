@@ -1,0 +1,72 @@
+
+conda 24.3.0
+
+========================================
+Power outage scheduled on Mar 18 and 19.
+========================================
+
+/usr/bin/srun
+Job started on Tue Feb 25 07:38:06 AM EST 2025
+Setup Time elapsed: 0d 0h 0m 0s
+[I 2025-02-25 07:43:55,313] A new study created in memory with name: no-name-442cb9c9-abbe-4769-9907-5941811f96da
+[W 2025-02-25 07:43:55,319] Trial 0 failed with parameters: {'lr': 8.456013244437231e-05, 'dropout': 0.19255312759484125, 'num_latents': 28, 'latent_dim': 199, 'adv_lambda': 0.48970952608132773} because of the following error: AssertionError('embed_dim must be divisible by num_heads').
+Traceback (most recent call last):
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/optuna/study/_optimize.py", line 197, in _run_trial
+    value_or_values = func(trial)
+                      ^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/test.py", line 283, in objective
+    model_instance = MultiModalModel(omics_dim=omics_data.shape[1],
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/test.py", line 160, in __init__
+    self.resampler = PerceiverResampler(input_dim=fusion_dim,
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/test.py", line 128, in __init__
+    self.cross_attn = CrossAttentionBlock(d_model=latent_dim, n_heads=n_heads, dropout=dropout)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/test.py", line 110, in __init__
+    self.attention = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, dropout=dropout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1071, in __init__
+    self.head_dim * num_heads == self.embed_dim
+AssertionError: embed_dim must be divisible by num_heads
+[W 2025-02-25 07:43:55,320] Trial 0 failed with value None.
+Traceback (most recent call last):
+  File "<frozen runpy>", line 189, in _run_module_as_main
+  File "<frozen runpy>", line 112, in _get_module_details
+  File "/home/asandhu9/cz-biohub-test/test.py", line 301, in <module>
+    study.optimize(objective, n_trials=10)
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/optuna/study/study.py", line 475, in optimize
+    _optimize(
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/optuna/study/_optimize.py", line 63, in _optimize
+    _optimize_sequential(
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/optuna/study/_optimize.py", line 160, in _optimize_sequential
+    frozen_trial = _run_trial(study, func, catch)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/optuna/study/_optimize.py", line 248, in _run_trial
+    raise func_err
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/optuna/study/_optimize.py", line 197, in _run_trial
+    value_or_values = func(trial)
+                      ^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/test.py", line 283, in objective
+    model_instance = MultiModalModel(omics_dim=omics_data.shape[1],
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/test.py", line 160, in __init__
+    self.resampler = PerceiverResampler(input_dim=fusion_dim, 
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/test.py", line 128, in __init__
+    self.cross_attn = CrossAttentionBlock(d_model=latent_dim, n_heads=n_heads, dropout=dropout)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/test.py", line 110, in __init__
+    self.attention = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, dropout=dropout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/torch/nn/modules/activation.py", line 1071, in __init__
+    self.head_dim * num_heads == self.embed_dim
+AssertionError: embed_dim must be divisible by num_heads
+Using device: cuda
+Number of cells loaded: 31780
+Textual embeddings shape: (31780, 768)
+embed_dim:256, num_heads:8
+embed_dim:199, num_heads:8
+srun: error: ia1: task 0: Exited with exit code 1
+Job completed on Tue Feb 25 07:43:57 AM EST 2025
+Process Time Elapsed: 0d 0h 5m 51s
