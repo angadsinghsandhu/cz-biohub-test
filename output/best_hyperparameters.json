@@ -1,10 +1,10 @@
 {
     "best_params": {
-        "lr": 0.001838165772065126,
-        "dropout": 0.1430892031376519,
-        "num_latents": 34,
-        "latent_dim": 256,
-        "adv_lambda": 0.0957057517270912
+        "lr": 0.0003667503084290308,
+        "dropout": 0.24462841983536956,
+        "num_latents": 30,
+        "latent_dim": 248,
+        "adv_lambda": 0.060222703860697425
     },
-    "final_accuracy": 0.8483637507866583
+    "final_accuracy": 0.9971762048192772
 }

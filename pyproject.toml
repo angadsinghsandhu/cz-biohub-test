@@ -15,6 +15,8 @@ dependencies = [
     "scanpy>=1.11.0",
     "cellxgene-census>=1.16.2",
     "wandb>=0.19.7",
+    "accelerate>=1.4.0",
+    "deepspeed>=0.16.4",
 ]
 
 [[tool.uv.index]]
