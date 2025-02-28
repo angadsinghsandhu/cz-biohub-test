@@ -12,9 +12,14 @@ for a single sample instead of averaging across a large batch. This avoids
 uniform-looking heatmaps.
 """
 
+##############################################################################
+#                              Imports
+##############################################################################
 import os
 import json
 import argparse
+from typing import Any, Tuple, List
+
 import numpy as np
 import scanpy as sc
 import torch
@@ -30,18 +35,36 @@ import cellxgene_census
 from tqdm import tqdm
 import wandb
 from accelerate import Accelerator
+from anndata import AnnData  # Type hint for the AnnData object from scanpy
 
-# Global placeholders for shared variables
-textual_embeddings = None
-accelerator = None
-omics_data = None
-dataloader = None
-donor_map = None
+##############################################################################
+#                   Global Placeholders for Shared Variables
+##############################################################################
+textual_embeddings: np.ndarray = None
+accelerator: Accelerator = None
+omics_data: np.ndarray = None
+dataloader: DataLoader = None
+donor_map: dict = None
 
 ##############################################################################
 #                           Argument Parsing
 ##############################################################################
 def parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments for the training script.
+
+    Returns:
+        argparse.Namespace: Parsed arguments containing configuration options.
+            - census_version (str): CELLxGENE census version.
+            - organism (str): Organism name.
+            - measurement_name (str): Measurement type (e.g., "RNA").
+            - output_dir (str): Directory for output artifacts.
+            - batch_size (int): Batch size for training.
+            - num_epochs (int): Number of training epochs.
+            - local_model_path (str): Path to the pretrained BioBERT model.
+            - seed (int): Random seed.
+            - use_wandb (bool): Whether to log training to Weights & Biases.
+    """
     parser = argparse.ArgumentParser(
         description="Train multimodal model with shared Optuna hyperparameter search using Accelerate and DeepSpeed"
     )
@@ -67,9 +90,23 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 ##############################################################################
-#                     Data Loading and UMAP Visualization
+#              Data Loading and UMAP Visualization
 ##############################################################################
-def load_data(census_version: str, organism: str, measurement_name: str, output_dir: str):
+def load_data(census_version: str, organism: str, measurement_name: str, output_dir: str) -> Tuple[AnnData, str]:
+    """
+    Load single-cell data from the CELLxGENE census and generate a UMAP plot.
+
+    Args:
+        census_version (str): Version of the CELLxGENE census to use.
+        organism (str): Name of the organism.
+        measurement_name (str): Measurement name (e.g., "RNA").
+        output_dir (str): Directory to store output artifacts (e.g., UMAP plot).
+
+    Returns:
+        Tuple[AnnData, str]: A tuple containing:
+            - The loaded AnnData object.
+            - The file path to the saved UMAP plot.
+    """
     warnings.filterwarnings("ignore")
     emb_names = ["geneformer"]
     with cellxgene_census.open_soma(census_version=census_version) as census:
@@ -83,6 +120,7 @@ def load_data(census_version: str, organism: str, measurement_name: str, output_
         )
     print(f"[Data] Loaded {adata.n_obs} cells.")
 
+    # Compute neighbors and UMAP for visualization
     sc.pp.neighbors(adata, use_rep="geneformer")
     sc.tl.umap(adata)
     umap_path = os.path.join(output_dir, "umap_geneformer.png")
@@ -93,19 +131,39 @@ def load_data(census_version: str, organism: str, measurement_name: str, output_
     return adata, umap_path
 
 ##############################################################################
-#                     Textual Embedding Extraction
+#                Textual Embedding Extraction
 ##############################################################################
-def extract_textual_embeddings(adata, model_path: str, device: torch.device):
+def extract_textual_embeddings(adata: AnnData, model_path: str, device: torch.device) -> np.ndarray:
+    """
+    Extract textual embeddings for cell type labels using a pretrained model.
+
+    Args:
+        adata (AnnData): The AnnData object containing single-cell data.
+        model_path (str): Path to the pretrained model for textual embeddings.
+        device (torch.device): The device to run the model on.
+
+    Returns:
+        np.ndarray: Array of textual embeddings with shape (num_cells, embedding_dim).
+    """
     tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
     text_model = AutoModel.from_pretrained(model_path, local_files_only=True).to(device)
     text_model.eval()
 
     def get_text_embedding(label: str) -> np.ndarray:
+        """
+        Obtain the embedding for a given label string.
+
+        Args:
+            label (str): A cell type label.
+
+        Returns:
+            np.ndarray: The embedding vector for the label.
+        """
         inputs = tokenizer(label, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = text_model(**inputs)
-        # Use the [CLS] token embedding
+        # Use the [CLS] token embedding (first token)
         return outputs.last_hidden_state[:, 0, :].squeeze(0).cpu().numpy()
 
     embeddings = [get_text_embedding(label) for label in adata.obs["cell_type"]]
@@ -114,96 +172,198 @@ def extract_textual_embeddings(adata, model_path: str, device: torch.device):
     return textual_embeddings_local
 
 ##############################################################################
-#                           Model Architecture
+#                         Gradient Reversal Operation
 ##############################################################################
 class GradientReversal(torch.autograd.Function):
+    """
+    Implements the gradient reversal operation for adversarial training.
+    """
     @staticmethod
-    def forward(ctx, x, lambda_):
+    def forward(ctx, x: torch.Tensor, lambda_: float) -> torch.Tensor:
+        """
+        Forward pass (identity operation).
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            lambda_ (float): Scaling factor for the gradient reversal.
+
+        Returns:
+            torch.Tensor: Same as the input tensor.
+        """
         ctx.lambda_ = lambda_
         return x.view_as(x)
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None]:
+        """
+        Backward pass which reverses the gradient.
+
+        Args:
+            grad_output (torch.Tensor): Gradient of the output.
+
+        Returns:
+            Tuple[torch.Tensor, None]: Reversed gradient and None for lambda.
+        """
         return -ctx.lambda_ * grad_output, None
 
-def grad_reverse(x, lambda_=1.0):
+def grad_reverse(x: torch.Tensor, lambda_: float = 1.0) -> torch.Tensor:
+    """
+    Apply gradient reversal to the input tensor.
+
+    Args:
+        x (torch.Tensor): Input tensor.
+        lambda_ (float, optional): Scaling factor for the gradient. Defaults to 1.0.
+
+    Returns:
+        torch.Tensor: Tensor with reversed gradients during backpropagation.
+    """
     return GradientReversal.apply(x, lambda_)
 
+##############################################################################
+#                      Cross-Attention Block Module
+##############################################################################
 class CrossAttentionBlock(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, batch_first: bool = True):
+    """
+    A module that performs multi-head cross-attention.
+    """
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, batch_first: bool = True) -> None:
+        """
+        Initialize the CrossAttentionBlock.
+
+        Args:
+            d_model (int): Dimension of the input embeddings.
+            n_heads (int): Number of attention heads.
+            dropout (float, optional): Dropout rate. Defaults to 0.1.
+            batch_first (bool, optional): Whether batch dimension comes first. Defaults to True.
+        """
         super(CrossAttentionBlock, self).__init__()
         print(f"[Model] Initializing CrossAttentionBlock (d_model={d_model}, n_heads={n_heads})")
         self.attention = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads,
-                                                dropout=dropout, batch_first=batch_first)
+                                               dropout=dropout, batch_first=batch_first)
         self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, query, key, value):
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Perform the forward pass for cross-attention.
+
+        Args:
+            query (torch.Tensor): Query tensor of shape (batch, seq_len, d_model).
+            key (torch.Tensor): Key tensor of shape (batch, seq_len, d_model).
+            value (torch.Tensor): Value tensor of shape (batch, seq_len, d_model).
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+                - The output tensor after attention and normalization.
+                - The attention weights.
+        """
         attn_output, attn_weights = self.attention(query, key, value)
         output = self.norm(query + self.dropout(attn_output))
         return output, attn_weights
 
+##############################################################################
+#                    Perceiver Resampler Module
+##############################################################################
 class PerceiverResampler(nn.Module):
+    """
+    Module that projects fused features into latent space via cross-attention.
+    """
     def __init__(self, input_dim: int, num_latents: int, latent_dim: int, n_heads: int,
-                 dropout: float = 0.1, batch_first: bool = True):
+                 dropout: float = 0.1, batch_first: bool = True) -> None:
+        """
+        Initialize the PerceiverResampler.
+
+        Args:
+            input_dim (int): Dimension of the input features.
+            num_latents (int): Number of latent vectors.
+            latent_dim (int): Dimension of each latent vector.
+            n_heads (int): Number of attention heads.
+            dropout (float, optional): Dropout rate. Defaults to 0.1.
+            batch_first (bool, optional): Whether batch dimension comes first. Defaults to True.
+        """
         super(PerceiverResampler, self).__init__()
         self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
         self.cross_attn = CrossAttentionBlock(d_model=latent_dim, n_heads=n_heads,
                                               dropout=dropout, batch_first=batch_first)
         self.input_proj = nn.Linear(input_dim, latent_dim) if input_dim != latent_dim else nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        x: (batch_size, fusion_dim) 
-        We first project x into latent_dim, then cross-attend from latents -> x.
+        Forward pass for projecting and aggregating features.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, input_dim).
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+                - Aggregated latent representation of shape (batch_size, latent_dim).
+                - Cross-attention weights.
         """
         x_proj = self.input_proj(x)
         batch = x.size(0)
         latents_expanded = self.latents.unsqueeze(0).expand(batch, -1, -1)  # (batch, num_latents, latent_dim)
         x_proj_unsq = x_proj.unsqueeze(1)  # (batch, 1, latent_dim)
         out, attn_weights = self.cross_attn(latents_expanded, x_proj_unsq, x_proj_unsq)
-        # out: (batch, num_latents, latent_dim)
-        out = out.mean(dim=1)  # (batch, latent_dim)
+        out = out.mean(dim=1)  # Aggregate across latents
         return out, attn_weights
 
+##############################################################################
+#                      Multimodal Model Architecture
+##############################################################################
 class MultiModalModel(nn.Module):
     """
-    Multimodal model with:
+    Multimodal model integrating omics and textual embeddings with:
       - Cross-attention between omics tokens (query) and text tokens (key/value)
-      - Transformer encoder on fused tokens
-      - Perceiver Resampler to aggregate fused features
+      - Transformer encoder for fused tokens
+      - Perceiver Resampler for latent aggregation
       - Adversarial branch for sex confounding
     """
     def __init__(self, omics_dim: int = 512, text_dim: int = 768, fusion_dim: int = 256,
                  n_heads: int = 8, num_tokens: int = 8, num_latents: int = 32,
                  latent_dim: int = 128, dropout: float = 0.1, adv_lambda: float = 0.1,
-                 num_donors: int = 10):
+                 num_donors: int = 10) -> None:
+        """
+        Initialize the MultiModalModel.
+
+        Args:
+            omics_dim (int, optional): Dimension of omics data. Defaults to 512.
+            text_dim (int, optional): Dimension of textual embeddings. Defaults to 768.
+            fusion_dim (int, optional): Dimension for fused tokens. Defaults to 256.
+            n_heads (int, optional): Number of attention heads. Defaults to 8.
+            num_tokens (int, optional): Number of tokens to split each modality into. Defaults to 8.
+            num_latents (int, optional): Number of latent vectors for resampling. Defaults to 32.
+            latent_dim (int, optional): Dimension of latent space. Defaults to 128.
+            dropout (float, optional): Dropout rate. Defaults to 0.1.
+            adv_lambda (float, optional): Scaling factor for adversarial gradient reversal. Defaults to 0.1.
+            num_donors (int, optional): Number of donor classes. Defaults to 10.
+        """
         super(MultiModalModel, self).__init__()
         self.num_tokens = num_tokens
         self.omics_token_dim = omics_dim // num_tokens  # e.g., 64
         self.text_token_dim = text_dim // num_tokens    # e.g., 96
-        # Project tokens into fusion space
+
+        # Project tokens into a common fusion space
         self.omics_token_proj = nn.Linear(self.omics_token_dim, fusion_dim)
         self.text_token_proj = nn.Linear(self.text_token_dim, fusion_dim)
 
-        # Cross-attention: omics as query, text as key/value
+        # Cross-attention: omics tokens query textual tokens
         self.cross_attn = CrossAttentionBlock(d_model=fusion_dim, n_heads=n_heads,
                                               dropout=dropout, batch_first=True)
 
-        # Feed-forward layer after cross-attention
+        # Feed-forward network after cross-attention
         self.ffn = nn.Sequential(
             nn.Linear(fusion_dim, fusion_dim),
             nn.ReLU(),
             nn.Linear(fusion_dim, fusion_dim)
         )
 
-        # Additional transformer encoder layer to refine fused tokens
+        # Transformer encoder layer for further refinement
         self.transformer_encoder = nn.TransformerEncoderLayer(d_model=fusion_dim,
                                                               nhead=n_heads,
                                                               dropout=dropout,
                                                               batch_first=True)
 
-        # Perceiver Resampler to convert fused features -> latents
+        # Perceiver Resampler to aggregate fused features into latent representation
         self.resampler = PerceiverResampler(input_dim=fusion_dim,
                                             num_latents=num_latents,
                                             latent_dim=latent_dim,
@@ -222,7 +382,7 @@ class MultiModalModel(nn.Module):
             nn.Linear(latent_dim // 2, num_donors)
         )
 
-        # Adversarial sex classifier
+        # Adversarial sex classifier head
         self.adv_classifier = nn.Sequential(
             nn.Linear(latent_dim, latent_dim),
             nn.ReLU(),
@@ -235,68 +395,129 @@ class MultiModalModel(nn.Module):
 
         self.adv_lambda = adv_lambda
 
-    def forward(self, omics, text):
+    def forward(self, omics: torch.Tensor, text: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass through the multimodal model.
+
+        Args:
+            omics (torch.Tensor): Omics data tensor of shape (batch, omics_dim).
+            text (torch.Tensor): Textual embeddings tensor of shape (batch, text_dim).
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                - donor_logits: Predictions for donor classification.
+                - sex_logits: Predictions for adversarial sex classification.
+                - attn_weights: Cross-attention weights from the CrossAttentionBlock.
+                - attn_resampler: Attention weights from the Perceiver Resampler.
+        """
         batch = omics.size(0)
-        # Reshape embeddings into tokens
+        # Reshape omics and text into tokens
         omics_tokens = omics.view(batch, self.num_tokens, self.omics_token_dim)
         text_tokens = text.view(batch, self.num_tokens, self.text_token_dim)
 
-        # Project tokens
+        # Project tokens into the fusion space
         omics_tokens = self.omics_token_proj(omics_tokens)  # (batch, num_tokens, fusion_dim)
         text_tokens = self.text_token_proj(text_tokens)     # (batch, num_tokens, fusion_dim)
 
-        # Cross-attention: omics queries text
+        # Cross-attention: omics tokens query text tokens
         fused_tokens, attn_weights = self.cross_attn(omics_tokens, text_tokens, text_tokens)
         fused_tokens = self.ffn(fused_tokens)
-        # Transformer encoder
+        # Transformer encoder for additional refinement
         fused_tokens = self.transformer_encoder(fused_tokens)
-        # Aggregate by mean pooling across tokens
+        # Aggregate features by averaging across tokens
         fused_feat = fused_tokens.mean(dim=1)
-        # Perceiver Resampler
+        # Perceiver Resampler to obtain latent representation
         latent, attn_resampler = self.resampler(fused_feat)
 
-        # Donor classification
+        # Donor classification branch
         donor_logits = self.classifier(latent)
-        # Adversarial branch
+        # Adversarial branch with gradient reversal
         adv_input = grad_reverse(latent, self.adv_lambda)
         sex_logits = self.adv_classifier(adv_input)
 
         return donor_logits, sex_logits, attn_weights, attn_resampler
 
 ##############################################################################
-#                           Dataset Preparation
+#                        Dataset Preparation Class
 ##############################################################################
 class SingleCellDataset(Dataset):
-    def __init__(self, omics_data: np.ndarray, text_data: np.ndarray, donor_labels: list, sex_labels: list):
+    """
+    Dataset class for single-cell omics and textual data.
+    """
+    def __init__(self, omics_data: np.ndarray, text_data: np.ndarray, donor_labels: List[int], sex_labels: List[int]) -> None:
+        """
+        Initialize the dataset with omics data, textual embeddings, and labels.
+
+        Args:
+            omics_data (np.ndarray): Array of omics features.
+            text_data (np.ndarray): Array of textual embeddings.
+            donor_labels (List[int]): List of donor label indices.
+            sex_labels (List[int]): List of sex label indices.
+        """
         self.omics = torch.tensor(omics_data, dtype=torch.float32)
         self.text = torch.tensor(text_data, dtype=torch.float32)
         self.donor_labels = torch.tensor(donor_labels, dtype=torch.long)
         self.sex_labels = torch.tensor(sex_labels, dtype=torch.long)
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """
+        Return the number of samples in the dataset.
+
+        Returns:
+            int: Number of samples.
+        """
         return self.omics.shape[0]
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Retrieve a single sample from the dataset.
+
+        Args:
+            idx (int): Index of the sample.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                - Omics data tensor.
+                - Textual embeddings tensor.
+                - Donor label tensor.
+                - Sex label tensor.
+        """
         return self.omics[idx], self.text[idx], self.donor_labels[idx], self.sex_labels[idx]
 
 ##############################################################################
-#                              Training Loop
+#                           Training Loop Function
 ##############################################################################
 def train_model(model: nn.Module,
                 dataloader: DataLoader,
-                optimizer,
-                scheduler,
+                optimizer: optim.Optimizer,
+                scheduler: torch.optim.lr_scheduler._LRScheduler,
                 num_epochs: int,
                 accelerator: Accelerator,
-                log_to_wandb: bool = False):
+                log_to_wandb: bool = False) -> Tuple[List[float], List[float], List[float]]:
     """
-    Trains the model for num_epochs. 
-    Returns: (donor_losses, adv_losses, accuracies)
+    Train the multimodal model for a given number of epochs.
+
+    Args:
+        model (nn.Module): The multimodal model.
+        dataloader (DataLoader): DataLoader for the training dataset.
+        optimizer (optim.Optimizer): Optimizer for model parameters.
+        scheduler (torch.optim.lr_scheduler._LRScheduler): Learning rate scheduler.
+        num_epochs (int): Number of training epochs.
+        accelerator (Accelerator): Accelerator for distributed training.
+        log_to_wandb (bool, optional): If True, log metrics to Weights & Biases. Defaults to False.
+
+    Returns:
+        Tuple[List[float], List[float], List[float]]:
+            - List of donor losses per epoch.
+            - List of adversarial losses per epoch.
+            - List of donor classification accuracies per epoch.
     """
     model.train()
     donor_criterion = nn.CrossEntropyLoss()
     adv_criterion = nn.CrossEntropyLoss()
-    donor_losses, adv_losses, accuracies = [], [], []
+    donor_losses: List[float] = []
+    adv_losses: List[float] = []
+    accuracies: List[float] = []
 
     for epoch in range(num_epochs):
         running_donor_loss = 0.0
@@ -304,6 +525,7 @@ def train_model(model: nn.Module,
         correct = 0
         total = 0
 
+        # Iterate over batches in the DataLoader
         for omics, text, donor_labels, sex_labels in tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}"):
             omics = omics.to(accelerator.device)
             text = text.to(accelerator.device)
@@ -321,10 +543,9 @@ def train_model(model: nn.Module,
             optimizer.step()
             scheduler.step()
 
-            # Accumulate stats
+            # Accumulate losses and compute accuracy
             running_donor_loss += loss_donor.item() * omics.size(0)
             running_adv_loss += loss_adv.item() * omics.size(0)
-
             _, predicted = torch.max(donor_logits, 1)
             total += donor_labels.size(0)
             correct += (predicted == donor_labels).sum().item()
@@ -349,9 +570,17 @@ def train_model(model: nn.Module,
     return donor_losses, adv_losses, accuracies
 
 ##############################################################################
-#                              Model Saving
+#                           Model Saving Function
 ##############################################################################
-def save_model(model: nn.Module, output_dir: str, accelerator: Accelerator):
+def save_model(model: nn.Module, output_dir: str, accelerator: Accelerator) -> None:
+    """
+    Save the final model checkpoint to disk.
+
+    Args:
+        model (nn.Module): The trained model.
+        output_dir (str): Directory where the checkpoint will be saved.
+        accelerator (Accelerator): Accelerator used for distributed training.
+    """
     os.makedirs(output_dir, exist_ok=True)
     model_to_save = accelerator.unwrap_model(model)
     save_path = os.path.join(output_dir, "final_model.pt")
@@ -359,13 +588,18 @@ def save_model(model: nn.Module, output_dir: str, accelerator: Accelerator):
     print(f"[Save] Model checkpoint saved to {save_path}")
 
 ##############################################################################
-#                        Hyperparameter Optimization Objective
+#     Hyperparameter Optimization Objective Function (Optuna)
 ##############################################################################
-def objective(trial):
+def objective(trial: optuna.trial.Trial) -> float:
     """
     Objective function for Optuna hyperparameter search.
-    Runs a 5-epoch training loop with the proposed hyperparameters
-    and returns the negative of the final accuracy (to minimize).
+    Trains the model for 5 epochs with trial hyperparameters and returns the negative accuracy.
+
+    Args:
+        trial (optuna.trial.Trial): An Optuna trial object for suggesting hyperparameters.
+
+    Returns:
+        float: Negative final accuracy (to be minimized by Optuna).
     """
     lr = trial.suggest_loguniform("lr", 1e-5, 1e-2)
     dropout = trial.suggest_uniform("dropout", 0.1, 0.5)
@@ -386,7 +620,7 @@ def objective(trial):
                                      num_donors=num_donors).to(accelerator.device)
 
     optimizer_instance = optim.Adam(model_instance.parameters(), lr=lr, weight_decay=1e-4)
-    total_steps = len(dataloader) * 5  # 5 epochs for quick tuning
+    total_steps = len(dataloader) * 5  # Quick tuning over 5 epochs
     warmup_steps = int(0.1 * total_steps)
     scheduler_instance = get_cosine_schedule_with_warmup(optimizer_instance,
                                                          num_warmup_steps=warmup_steps,
@@ -401,19 +635,31 @@ def objective(trial):
                                          accelerator=accelerator,
                                          log_to_wandb=False)
     final_acc = accuracies_trial[-1]
-    return -final_acc  # We minimize negative accuracy
+    return -final_acc  # Negative accuracy for minimization
 
 ##############################################################################
-#                                  Main
+#                                   Main Function
 ##############################################################################
-def main():
+def main() -> None:
+    """
+    Main function to run the training pipeline:
+      1. Parse arguments and set random seeds.
+      2. Initialize Accelerator.
+      3. Load data and generate UMAP visualization.
+      4. Extract textual embeddings.
+      5. Build label mappings and dataset.
+      6. Perform hyperparameter optimization with Optuna.
+      7. Train the final model.
+      8. Plot training curves and visualize cross-attention.
+      9. Save final results and model checkpoint.
+    """
     global textual_embeddings, accelerator, omics_data, dataloader, donor_map
 
     args = parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    # Initialize Accelerator (DeepSpeed data parallelism via Accelerate)
+    # Initialize Accelerator for distributed training
     accelerator = Accelerator()
     print(f"[Main] Accelerator initialized on device: {accelerator.device}")
 
@@ -425,49 +671,49 @@ def main():
                                  args.measurement_name,
                                  args.output_dir)
 
-    # 2. Extract textual embeddings
+    # 2. Extract textual embeddings from cell type labels
     print("Extracting Textual Embeddings...")
     textual_embeddings = extract_textual_embeddings(adata,
                                                     args.local_model_path,
                                                     accelerator.device)
     print("Textual Embeddings Extracted!!!")
 
-    # 3. Build label mappings
+    # 3. Build label mappings for donors and sex
     donor_map = {donor: i for i, donor in enumerate(pd.unique(adata.obs["donor_id"]))}
     sex_map = {"male": 0, "female": 1}
     donor_labels = [donor_map[d] for d in adata.obs["donor_id"]]
     sex_labels = [sex_map[s.lower()] if s.lower() in sex_map else 0 for s in adata.obs["sex"]]
 
-    # 4. Build dataset and dataloader
+    # 4. Build dataset and DataLoader for training
     omics_data = adata.obsm["geneformer"]
     dataset = SingleCellDataset(omics_data, textual_embeddings, donor_labels, sex_labels)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
 
-    # 5. Hyperparameter Optimization (Shared Storage)
+    # 5. Hyperparameter Optimization using shared Optuna storage
     storage_name = "sqlite:///optuna_study.db"
     study = optuna.create_study(direction="minimize",
                                 storage=storage_name,
                                 study_name="multimodal_study",
                                 load_if_exists=True)
     study.optimize(objective, n_trials=10)
-    accelerator.wait_for_everyone()  # Wait until all processes finish
+    accelerator.wait_for_everyone()  # Wait for all processes to complete
     best_params = study.best_params
     current_best_acc = -study.best_value
     print(f"[Optuna] Best hyperparameters from Optuna: {best_params} "
           f"with accuracy {current_best_acc:.4f}")
 
-    # 6. Save best hyperparameters
+    # 6. Save best hyperparameters to disk
     best_hp_path = os.path.join(args.output_dir, "best_hyperparameters.json")
     final_hp_results = {"best_params": best_params, "final_accuracy": current_best_acc}
     with open(best_hp_path, "w") as f:
         json.dump(final_hp_results, f, indent=4)
     print(f"[Main] Best hyperparameters saved to {best_hp_path}")
 
-    # 7. Initialize wandb if enabled
+    # 7. Initialize wandb logging if enabled
     if args.use_wandb:
         wandb.init(project="cz-biohub-test", config=best_params, reinit=True)
 
-    # 8. Build final model with best hyperparameters
+    # 8. Build the final model with the best hyperparameters
     num_donors = len(donor_map)
     model = MultiModalModel(
         omics_dim=omics_data.shape[1],
@@ -489,13 +735,13 @@ def main():
                                                 num_warmup_steps=warmup_steps,
                                                 num_training_steps=total_steps)
 
-    # Prepare everything with Accelerator
+    # Prepare model, optimizer, dataloader, and scheduler with Accelerator
     model, optimizer, dataloader, scheduler = accelerator.prepare(model,
                                                                   optimizer,
                                                                   dataloader,
                                                                   scheduler)
 
-    # 9. Full training
+    # 9. Train the model with full training epochs
     donor_losses, adv_losses, accuracies = train_model(model,
                                                        dataloader,
                                                        optimizer,
@@ -504,7 +750,7 @@ def main():
                                                        accelerator,
                                                        log_to_wandb=args.use_wandb)
 
-    # 10. Plot training curves
+    # 10. Plot and save training curves
     epochs = range(1, args.num_epochs + 1)
     training_curves_path = os.path.join(args.output_dir, "training_curves.png")
     plt.figure(figsize=(18, 5))
@@ -534,29 +780,22 @@ def main():
     plt.close()
     print(f"[Main] Training curves saved to {training_curves_path}")
 
-    # 11. Visualize Perceiver Resampler cross-attention on a single sample
-    # --------------------------------------------------------------------
+    # 11. Visualize Perceiver Resampler cross-attention for a single sample
     model.eval()
-    # Create a single-sample DataLoader to avoid averaging across a large batch
     single_loader = DataLoader(dataset, batch_size=1, shuffle=True)
     sample_omics, sample_text, _, _ = next(iter(single_loader))
     sample_omics = sample_omics.to(accelerator.device)
     sample_text = sample_text.to(accelerator.device)
 
-    # We specifically retrieve the Perceiver Resampler's attention: attn_resampler
+    # Retrieve cross-attention weights from the Perceiver Resampler
     with torch.no_grad():
         _, _, _, attn_resampler = model(sample_omics, sample_text)
-        # attn_resampler shape: (batch=1, num_heads, num_latents, 1) if batch_first=True
-        # or (batch=1, num_heads, num_latents, seq_len) depending on usage
 
-    # Remove batch dimension
+    # Process attention tensor: remove batch dimension and average across heads if necessary
     if attn_resampler.dim() == 4:
-        # shape: (1, num_heads, query_len, key_len)
         attn_resampler = attn_resampler.squeeze(0)  # shape: (num_heads, query_len, key_len)
-        # Average across heads, keep query_len x key_len
         avg_attn = attn_resampler.mean(dim=0).detach().cpu().numpy()
     elif attn_resampler.dim() == 3:
-        # shape: (1, query_len, key_len)
         avg_attn = attn_resampler.squeeze(0).detach().cpu().numpy()
     else:
         raise ValueError("Unexpected shape for attn_resampler")
@@ -572,7 +811,7 @@ def main():
     plt.close()
     print(f"[Main] Perceiver cross-attention heatmap saved to {cross_attn_path}")
 
-    # 12. Save final results
+    # 12. Save final results (best hyperparameters and final accuracy)
     final_results = {"best_params": best_params, "final_accuracy": accuracies[-1]}
     with open(best_hp_path, "w") as f:
         json.dump(final_results, f, indent=4)
@@ -581,12 +820,12 @@ def main():
     # 13. Save model checkpoint
     save_model(model, args.output_dir, accelerator)
 
-    # 14. Finish wandb if enabled
+    # 14. Finalize wandb logging if enabled
     if args.use_wandb:
         wandb.log({"final_accuracy": accuracies[-1]})
         wandb.finish()
 
-    # 15. Print final summary
+    # 15. Print final summary of results
     print("\n[Main] Final Results Summary:")
     print(f" - Number of cells loaded: {adata.n_obs}")
     print(f" - UMAP plot saved at: {umap_path}")
