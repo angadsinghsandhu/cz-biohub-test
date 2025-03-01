@@ -4,12 +4,11 @@ main.py
 
 Script to train a multimodal model that integrates Geneformer single-cell 
 embeddings (omics modality) and textual embeddings (from cell type labels) 
-to predict donor IDs. This updated version uses a shared Optuna storage backend 
-to ensure that each trial is only run once across multiple GPUs.
-
-Key Fix: We now retrieve and plot the Perceiver Resampler's cross-attention 
-for a single sample instead of averaging across a large batch. This avoids 
-uniform-looking heatmaps.
+to predict donor IDs with adversarial training to control for the sex confounder.
+This version saves the model checkpoint at each epoch (only during the final training loop)
+into a "temp/" directory within the "output/" directory and then selects the checkpoint
+with the highest test accuracy. It also prints out both donor loss and adversarial loss 
+for training, validation, and test sets.
 """
 
 ##############################################################################
@@ -25,7 +24,7 @@ import scanpy as sc
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from transformers import AutoTokenizer, AutoModel, get_cosine_schedule_with_warmup
 import optuna
 import matplotlib.pyplot as plt
@@ -43,7 +42,10 @@ from anndata import AnnData  # Type hint for the AnnData object from scanpy
 textual_embeddings: np.ndarray = None
 accelerator: Accelerator = None
 omics_data: np.ndarray = None
-dataloader: DataLoader = None
+# Global dataloaders for the splits (train, val, test)
+train_dataloader: DataLoader = None
+val_dataloader: DataLoader = None
+test_dataloader: DataLoader = None
 donor_map: dict = None
 
 ##############################################################################
@@ -52,18 +54,6 @@ donor_map: dict = None
 def parse_args() -> argparse.Namespace:
     """
     Parse command-line arguments for the training script.
-
-    Returns:
-        argparse.Namespace: Parsed arguments containing configuration options.
-            - census_version (str): CELLxGENE census version.
-            - organism (str): Organism name.
-            - measurement_name (str): Measurement type (e.g., "RNA").
-            - output_dir (str): Directory for output artifacts.
-            - batch_size (int): Batch size for training.
-            - num_epochs (int): Number of training epochs.
-            - local_model_path (str): Path to the pretrained BioBERT model.
-            - seed (int): Random seed.
-            - use_wandb (bool): Whether to log training to Weights & Biases.
     """
     parser = argparse.ArgumentParser(
         description="Train multimodal model with shared Optuna hyperparameter search using Accelerate and DeepSpeed"
@@ -95,17 +85,6 @@ def parse_args() -> argparse.Namespace:
 def load_data(census_version: str, organism: str, measurement_name: str, output_dir: str) -> Tuple[AnnData, str]:
     """
     Load single-cell data from the CELLxGENE census and generate a UMAP plot.
-
-    Args:
-        census_version (str): Version of the CELLxGENE census to use.
-        organism (str): Name of the organism.
-        measurement_name (str): Measurement name (e.g., "RNA").
-        output_dir (str): Directory to store output artifacts (e.g., UMAP plot).
-
-    Returns:
-        Tuple[AnnData, str]: A tuple containing:
-            - The loaded AnnData object.
-            - The file path to the saved UMAP plot.
     """
     warnings.filterwarnings("ignore")
     emb_names = ["geneformer"]
@@ -136,14 +115,6 @@ def load_data(census_version: str, organism: str, measurement_name: str, output_
 def extract_textual_embeddings(adata: AnnData, model_path: str, device: torch.device) -> np.ndarray:
     """
     Extract textual embeddings for cell type labels using a pretrained model.
-
-    Args:
-        adata (AnnData): The AnnData object containing single-cell data.
-        model_path (str): Path to the pretrained model for textual embeddings.
-        device (torch.device): The device to run the model on.
-
-    Returns:
-        np.ndarray: Array of textual embeddings with shape (num_cells, embedding_dim).
     """
     tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
     text_model = AutoModel.from_pretrained(model_path, local_files_only=True).to(device)
@@ -152,12 +123,6 @@ def extract_textual_embeddings(adata: AnnData, model_path: str, device: torch.de
     def get_text_embedding(label: str) -> np.ndarray:
         """
         Obtain the embedding for a given label string.
-
-        Args:
-            label (str): A cell type label.
-
-        Returns:
-            np.ndarray: The embedding vector for the label.
         """
         inputs = tokenizer(label, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
@@ -180,42 +145,16 @@ class GradientReversal(torch.autograd.Function):
     """
     @staticmethod
     def forward(ctx, x: torch.Tensor, lambda_: float) -> torch.Tensor:
-        """
-        Forward pass (identity operation).
-
-        Args:
-            x (torch.Tensor): Input tensor.
-            lambda_ (float): Scaling factor for the gradient reversal.
-
-        Returns:
-            torch.Tensor: Same as the input tensor.
-        """
         ctx.lambda_ = lambda_
         return x.view_as(x)
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> Tuple[torch.Tensor, None]:
-        """
-        Backward pass which reverses the gradient.
-
-        Args:
-            grad_output (torch.Tensor): Gradient of the output.
-
-        Returns:
-            Tuple[torch.Tensor, None]: Reversed gradient and None for lambda.
-        """
         return -ctx.lambda_ * grad_output, None
 
 def grad_reverse(x: torch.Tensor, lambda_: float = 1.0) -> torch.Tensor:
     """
     Apply gradient reversal to the input tensor.
-
-    Args:
-        x (torch.Tensor): Input tensor.
-        lambda_ (float, optional): Scaling factor for the gradient. Defaults to 1.0.
-
-    Returns:
-        torch.Tensor: Tensor with reversed gradients during backpropagation.
     """
     return GradientReversal.apply(x, lambda_)
 
@@ -227,15 +166,6 @@ class CrossAttentionBlock(nn.Module):
     A module that performs multi-head cross-attention.
     """
     def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, batch_first: bool = True) -> None:
-        """
-        Initialize the CrossAttentionBlock.
-
-        Args:
-            d_model (int): Dimension of the input embeddings.
-            n_heads (int): Number of attention heads.
-            dropout (float, optional): Dropout rate. Defaults to 0.1.
-            batch_first (bool, optional): Whether batch dimension comes first. Defaults to True.
-        """
         super(CrossAttentionBlock, self).__init__()
         print(f"[Model] Initializing CrossAttentionBlock (d_model={d_model}, n_heads={n_heads})")
         self.attention = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads,
@@ -244,19 +174,6 @@ class CrossAttentionBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Perform the forward pass for cross-attention.
-
-        Args:
-            query (torch.Tensor): Query tensor of shape (batch, seq_len, d_model).
-            key (torch.Tensor): Key tensor of shape (batch, seq_len, d_model).
-            value (torch.Tensor): Value tensor of shape (batch, seq_len, d_model).
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-                - The output tensor after attention and normalization.
-                - The attention weights.
-        """
         attn_output, attn_weights = self.attention(query, key, value)
         output = self.norm(query + self.dropout(attn_output))
         return output, attn_weights
@@ -270,17 +187,6 @@ class PerceiverResampler(nn.Module):
     """
     def __init__(self, input_dim: int, num_latents: int, latent_dim: int, n_heads: int,
                  dropout: float = 0.1, batch_first: bool = True) -> None:
-        """
-        Initialize the PerceiverResampler.
-
-        Args:
-            input_dim (int): Dimension of the input features.
-            num_latents (int): Number of latent vectors.
-            latent_dim (int): Dimension of each latent vector.
-            n_heads (int): Number of attention heads.
-            dropout (float, optional): Dropout rate. Defaults to 0.1.
-            batch_first (bool, optional): Whether batch dimension comes first. Defaults to True.
-        """
         super(PerceiverResampler, self).__init__()
         self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
         self.cross_attn = CrossAttentionBlock(d_model=latent_dim, n_heads=n_heads,
@@ -288,17 +194,6 @@ class PerceiverResampler(nn.Module):
         self.input_proj = nn.Linear(input_dim, latent_dim) if input_dim != latent_dim else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass for projecting and aggregating features.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, input_dim).
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-                - Aggregated latent representation of shape (batch_size, latent_dim).
-                - Cross-attention weights.
-        """
         x_proj = self.input_proj(x)
         batch = x.size(0)
         latents_expanded = self.latents.unsqueeze(0).expand(batch, -1, -1)  # (batch, num_latents, latent_dim)
@@ -322,21 +217,6 @@ class MultiModalModel(nn.Module):
                  n_heads: int = 8, num_tokens: int = 8, num_latents: int = 32,
                  latent_dim: int = 128, dropout: float = 0.1, adv_lambda: float = 0.1,
                  num_donors: int = 10) -> None:
-        """
-        Initialize the MultiModalModel.
-
-        Args:
-            omics_dim (int, optional): Dimension of omics data. Defaults to 512.
-            text_dim (int, optional): Dimension of textual embeddings. Defaults to 768.
-            fusion_dim (int, optional): Dimension for fused tokens. Defaults to 256.
-            n_heads (int, optional): Number of attention heads. Defaults to 8.
-            num_tokens (int, optional): Number of tokens to split each modality into. Defaults to 8.
-            num_latents (int, optional): Number of latent vectors for resampling. Defaults to 32.
-            latent_dim (int, optional): Dimension of latent space. Defaults to 128.
-            dropout (float, optional): Dropout rate. Defaults to 0.1.
-            adv_lambda (float, optional): Scaling factor for adversarial gradient reversal. Defaults to 0.1.
-            num_donors (int, optional): Number of donor classes. Defaults to 10.
-        """
         super(MultiModalModel, self).__init__()
         self.num_tokens = num_tokens
         self.omics_token_dim = omics_dim // num_tokens  # e.g., 64
@@ -346,7 +226,7 @@ class MultiModalModel(nn.Module):
         self.omics_token_proj = nn.Linear(self.omics_token_dim, fusion_dim)
         self.text_token_proj = nn.Linear(self.text_token_dim, fusion_dim)
 
-        # Cross-attention: omics tokens query textual tokens
+        # Cross-attention: omics tokens query text tokens
         self.cross_attn = CrossAttentionBlock(d_model=fusion_dim, n_heads=n_heads,
                                               dropout=dropout, batch_first=True)
 
@@ -357,7 +237,7 @@ class MultiModalModel(nn.Module):
             nn.Linear(fusion_dim, fusion_dim)
         )
 
-        # Transformer encoder layer for further refinement
+        # Transformer encoder layer for additional refinement
         self.transformer_encoder = nn.TransformerEncoderLayer(d_model=fusion_dim,
                                                               nhead=n_heads,
                                                               dropout=dropout,
@@ -396,20 +276,6 @@ class MultiModalModel(nn.Module):
         self.adv_lambda = adv_lambda
 
     def forward(self, omics: torch.Tensor, text: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Forward pass through the multimodal model.
-
-        Args:
-            omics (torch.Tensor): Omics data tensor of shape (batch, omics_dim).
-            text (torch.Tensor): Textual embeddings tensor of shape (batch, text_dim).
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-                - donor_logits: Predictions for donor classification.
-                - sex_logits: Predictions for adversarial sex classification.
-                - attn_weights: Cross-attention weights from the CrossAttentionBlock.
-                - attn_resampler: Attention weights from the Perceiver Resampler.
-        """
         batch = omics.size(0)
         # Reshape omics and text into tokens
         omics_tokens = omics.view(batch, self.num_tokens, self.omics_token_dim)
@@ -445,88 +311,97 @@ class SingleCellDataset(Dataset):
     Dataset class for single-cell omics and textual data.
     """
     def __init__(self, omics_data: np.ndarray, text_data: np.ndarray, donor_labels: List[int], sex_labels: List[int]) -> None:
-        """
-        Initialize the dataset with omics data, textual embeddings, and labels.
-
-        Args:
-            omics_data (np.ndarray): Array of omics features.
-            text_data (np.ndarray): Array of textual embeddings.
-            donor_labels (List[int]): List of donor label indices.
-            sex_labels (List[int]): List of sex label indices.
-        """
         self.omics = torch.tensor(omics_data, dtype=torch.float32)
         self.text = torch.tensor(text_data, dtype=torch.float32)
         self.donor_labels = torch.tensor(donor_labels, dtype=torch.long)
         self.sex_labels = torch.tensor(sex_labels, dtype=torch.long)
 
     def __len__(self) -> int:
-        """
-        Return the number of samples in the dataset.
-
-        Returns:
-            int: Number of samples.
-        """
         return self.omics.shape[0]
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Retrieve a single sample from the dataset.
-
-        Args:
-            idx (int): Index of the sample.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-                - Omics data tensor.
-                - Textual embeddings tensor.
-                - Donor label tensor.
-                - Sex label tensor.
-        """
         return self.omics[idx], self.text[idx], self.donor_labels[idx], self.sex_labels[idx]
 
 ##############################################################################
-#                           Training Loop Function
+#         Modified Evaluation Function (Donor & Adversarial Loss)
+##############################################################################
+def evaluate_model_full(model: nn.Module, dataloader: DataLoader, accelerator: Accelerator) -> Tuple[float, float, float]:
+    """
+    Evaluate the model on a given dataloader and return:
+      - Average donor loss, average adversarial loss, and donor accuracy.
+    """
+    model.eval()
+    donor_criterion = nn.CrossEntropyLoss()
+    adv_criterion = nn.CrossEntropyLoss()
+    running_donor_loss = 0.0
+    running_adv_loss = 0.0
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for omics, text, donor_labels, sex_labels in dataloader:
+            omics = omics.to(accelerator.device)
+            text = text.to(accelerator.device)
+            donor_labels = donor_labels.to(accelerator.device)
+            sex_labels = sex_labels.to(accelerator.device)
+            donor_logits, sex_logits, _, _ = model(omics, text)
+            loss_donor = donor_criterion(donor_logits, donor_labels)
+            loss_adv = adv_criterion(sex_logits, sex_labels)
+            running_donor_loss += loss_donor.item() * omics.size(0)
+            running_adv_loss += loss_adv.item() * omics.size(0)
+            _, predicted = torch.max(donor_logits, 1)
+            total += donor_labels.size(0)
+            correct += (predicted == donor_labels).sum().item()
+    avg_donor_loss = running_donor_loss / total
+    avg_adv_loss = running_adv_loss / total
+    accuracy = correct / total
+    model.train()  # Switch back to train mode
+    return avg_donor_loss, avg_adv_loss, accuracy
+
+##############################################################################
+#           Modified Training Loop with Epoch-wise Checkpointing
 ##############################################################################
 def train_model(model: nn.Module,
-                dataloader: DataLoader,
+                train_loader: DataLoader,
                 optimizer: optim.Optimizer,
                 scheduler: torch.optim.lr_scheduler._LRScheduler,
                 num_epochs: int,
                 accelerator: Accelerator,
-                log_to_wandb: bool = False) -> Tuple[List[float], List[float], List[float]]:
+                output_dir: str,
+                log_to_wandb: bool = False,
+                val_loader: DataLoader = None,
+                test_loader: DataLoader = None,
+                early_stopping_patience: int = 3,
+                save_checkpoints: bool = True) -> Tuple[List[float], List[float], List[float], List[int]]:
     """
-    Train the multimodal model for a given number of epochs.
-
-    Args:
-        model (nn.Module): The multimodal model.
-        dataloader (DataLoader): DataLoader for the training dataset.
-        optimizer (optim.Optimizer): Optimizer for model parameters.
-        scheduler (torch.optim.lr_scheduler._LRScheduler): Learning rate scheduler.
-        num_epochs (int): Number of training epochs.
-        accelerator (Accelerator): Accelerator for distributed training.
-        log_to_wandb (bool, optional): If True, log metrics to Weights & Biases. Defaults to False.
-
+    Train the multimodal model for a given number of epochs while evaluating on 
+    validation and test sets. If save_checkpoints is True, saves the model checkpoint at each epoch
+    into the specified output_dir and tracks the best test accuracy model.
+    
     Returns:
-        Tuple[List[float], List[float], List[float]]:
-            - List of donor losses per epoch.
-            - List of adversarial losses per epoch.
-            - List of donor classification accuracies per epoch.
+      - Lists of training accuracies, validation accuracies, test accuracies, and epoch numbers.
     """
     model.train()
     donor_criterion = nn.CrossEntropyLoss()
     adv_criterion = nn.CrossEntropyLoss()
-    donor_losses: List[float] = []
-    adv_losses: List[float] = []
-    accuracies: List[float] = []
+
+    train_accs, val_accs, test_accs, epoch_list = [], [], [], []
+    
+    best_test_acc = 0.0
+    best_epoch = -1
+    patience_counter = 0
+    prev_train_acc, prev_val_acc, prev_test_acc = None, None, None
+
+    # Ensure the output directory exists if saving checkpoints
+    if save_checkpoints:
+        os.makedirs(output_dir, exist_ok=True)
 
     for epoch in range(num_epochs):
         running_donor_loss = 0.0
         running_adv_loss = 0.0
-        correct = 0
-        total = 0
+        correct_train = 0
+        total_train = 0
 
-        # Iterate over batches in the DataLoader
-        for omics, text, donor_labels, sex_labels in tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+        for omics, text, donor_labels, sex_labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
             omics = omics.to(accelerator.device)
             text = text.to(accelerator.device)
             donor_labels = donor_labels.to(accelerator.device)
@@ -534,7 +409,6 @@ def train_model(model: nn.Module,
 
             optimizer.zero_grad()
             donor_logits, sex_logits, _, _ = model(omics, text)
-
             loss_donor = donor_criterion(donor_logits, donor_labels)
             loss_adv = adv_criterion(sex_logits, sex_labels)
             loss = loss_donor + loss_adv
@@ -543,31 +417,108 @@ def train_model(model: nn.Module,
             optimizer.step()
             scheduler.step()
 
-            # Accumulate losses and compute accuracy
             running_donor_loss += loss_donor.item() * omics.size(0)
             running_adv_loss += loss_adv.item() * omics.size(0)
             _, predicted = torch.max(donor_logits, 1)
-            total += donor_labels.size(0)
-            correct += (predicted == donor_labels).sum().item()
+            total_train += donor_labels.size(0)
+            correct_train += (predicted == donor_labels).sum().item()
 
-        epoch_donor_loss = running_donor_loss / total
-        epoch_adv_loss = running_adv_loss / total
-        epoch_acc = correct / total
+        epoch_train_acc = correct_train / total_train
 
-        donor_losses.append(epoch_donor_loss)
-        adv_losses.append(epoch_adv_loss)
-        accuracies.append(epoch_acc)
+        # Evaluate on validation set
+        if val_loader is not None:
+            val_d_loss, val_a_loss, epoch_val_acc = evaluate_model_full(model, val_loader, accelerator)
+        else:
+            val_d_loss = 0.0
+            val_a_loss = 0.0
+            epoch_val_acc = 0.0
+        # Evaluate on test set
+        if test_loader is not None:
+            test_d_loss, test_a_loss, epoch_test_acc = evaluate_model_full(model, test_loader, accelerator)
+        else:
+            test_d_loss = 0.0
+            test_a_loss = 0.0
+            epoch_test_acc = 0.0
 
-        print(f"[Train] Epoch {epoch+1}/{num_epochs} - Donor Loss: {epoch_donor_loss:.4f} - "
-              f"Adv Loss: {epoch_adv_loss:.4f} - Accuracy: {epoch_acc:.4f}")
+        print(f"[Epoch {epoch+1}]")
+        print(f"  Train - Accuracy: {epoch_train_acc:.4f}")
+        print(f"  Val   - Donor Loss: {val_d_loss:.4f}, Adv Loss: {val_a_loss:.4f}, Accuracy: {epoch_val_acc:.4f}")
+        print(f"  Test  - Donor Loss: {test_d_loss:.4f}, Adv Loss: {test_a_loss:.4f}, Accuracy: {epoch_test_acc:.4f}")
 
         if log_to_wandb:
-            wandb.log({"epoch": epoch+1,
-                       "donor_loss": epoch_donor_loss,
-                       "adv_loss": epoch_adv_loss,
-                       "accuracy": epoch_acc})
+            wandb.log({
+                "epoch": epoch+1,
+                "train_accuracy": epoch_train_acc,
+                "val_donor_loss": val_d_loss,
+                "val_adv_loss": val_a_loss,
+                "val_accuracy": epoch_val_acc,
+                "test_donor_loss": test_d_loss,
+                "test_adv_loss": test_a_loss,
+                "test_accuracy": epoch_test_acc,
+            })
 
-    return donor_losses, adv_losses, accuracies
+        train_accs.append(epoch_train_acc)
+        val_accs.append(epoch_val_acc)
+        test_accs.append(epoch_test_acc)
+        epoch_list.append(epoch+1)
+
+        # Save model checkpoint for this epoch if enabled
+        if save_checkpoints:
+            epoch_checkpoint_path = os.path.join(output_dir, f"model_epoch_{epoch+1}.pt")
+            torch.save(accelerator.unwrap_model(model).state_dict(), epoch_checkpoint_path)
+            print(f"  [Checkpoint] Model saved to {epoch_checkpoint_path}")
+
+            # Track best test accuracy for final model selection and save best model
+            if epoch_test_acc > best_test_acc:
+                best_test_acc = epoch_test_acc
+                best_epoch = epoch+1
+                best_model_path = os.path.join(output_dir, "best_model.pt")
+                torch.save(accelerator.unwrap_model(model).state_dict(), best_model_path)
+                print(f"  [Best] New best model at epoch {epoch+1} with test accuracy: {epoch_test_acc:.4f}")
+
+        # Early stopping: if training accuracy increases but both val and test accuracies drop
+        if prev_train_acc is not None and prev_val_acc is not None and prev_test_acc is not None:
+            if (epoch_train_acc > prev_train_acc and epoch_val_acc < prev_val_acc and epoch_test_acc < prev_test_acc):
+                patience_counter += 1
+                print(f"  Overfitting detected. Patience counter: {patience_counter}/{early_stopping_patience}")
+            else:
+                patience_counter = 0
+        prev_train_acc, prev_val_acc, prev_test_acc = epoch_train_acc, epoch_val_acc, epoch_test_acc
+
+        if patience_counter >= early_stopping_patience:
+            print("  Early stopping triggered due to overfitting.")
+            break
+
+    if save_checkpoints:
+        print(f"[Training] Best model from epoch {best_epoch} with test accuracy: {best_test_acc:.4f}")
+    return train_accs, val_accs, test_accs, epoch_list
+
+##############################################################################
+#                  Function to Print Sample Predictions
+##############################################################################
+def sample_predictions(model: nn.Module, dataloader: DataLoader, accelerator: Accelerator, donor_inv_map: dict, num_samples: int = 5) -> None:
+    """
+    Print sample predictions from the model on the provided dataloader.
+    """
+    model.eval()
+    samples_printed = 0
+    print("\n[Sample Predictions]")
+    with torch.no_grad():
+        for omics, text, donor_labels, _ in dataloader:
+            omics = omics.to(accelerator.device)
+            text = text.to(accelerator.device)
+            donor_logits, _, _, _ = model(omics, text)
+            _, predicted = torch.max(donor_logits, 1)
+            for i in range(omics.size(0)):
+                pred_label = predicted[i].item()
+                true_label = donor_labels[i].item()
+                print(f"Sample {samples_printed+1}: Predicted Donor: {donor_inv_map[pred_label]}, True Donor: {donor_inv_map[true_label]}")
+                samples_printed += 1
+                if samples_printed >= num_samples:
+                    break
+            if samples_printed >= num_samples:
+                break
+    model.train()
 
 ##############################################################################
 #                           Model Saving Function
@@ -575,11 +526,6 @@ def train_model(model: nn.Module,
 def save_model(model: nn.Module, output_dir: str, accelerator: Accelerator) -> None:
     """
     Save the final model checkpoint to disk.
-
-    Args:
-        model (nn.Module): The trained model.
-        output_dir (str): Directory where the checkpoint will be saved.
-        accelerator (Accelerator): Accelerator used for distributed training.
     """
     os.makedirs(output_dir, exist_ok=True)
     model_to_save = accelerator.unwrap_model(model)
@@ -593,14 +539,11 @@ def save_model(model: nn.Module, output_dir: str, accelerator: Accelerator) -> N
 def objective(trial: optuna.trial.Trial) -> float:
     """
     Objective function for Optuna hyperparameter search.
-    Trains the model for 5 epochs with trial hyperparameters and returns the negative accuracy.
-
-    Args:
-        trial (optuna.trial.Trial): An Optuna trial object for suggesting hyperparameters.
-
-    Returns:
-        float: Negative final accuracy (to be minimized by Optuna).
+    Trains the model for 5 epochs on the training set and evaluates on the validation set.
+    Returns the negative validation accuracy.
+    Note: During Optuna testing, checkpoint saving is disabled.
     """
+    global train_dataloader, val_dataloader  # Use the split dataloaders
     lr = trial.suggest_loguniform("lr", 1e-5, 1e-2)
     dropout = trial.suggest_uniform("dropout", 0.1, 0.5)
     num_latents = trial.suggest_int("num_latents", 16, 64)
@@ -620,22 +563,26 @@ def objective(trial: optuna.trial.Trial) -> float:
                                      num_donors=num_donors).to(accelerator.device)
 
     optimizer_instance = optim.Adam(model_instance.parameters(), lr=lr, weight_decay=1e-4)
-    total_steps = len(dataloader) * 5  # Quick tuning over 5 epochs
+    total_steps = len(train_dataloader) * 5  # Quick tuning over 5 epochs
     warmup_steps = int(0.1 * total_steps)
     scheduler_instance = get_cosine_schedule_with_warmup(optimizer_instance,
                                                          num_warmup_steps=warmup_steps,
                                                          num_training_steps=total_steps)
 
-    # Train for 5 epochs
-    _, _, accuracies_trial = train_model(model_instance,
-                                         dataloader,
-                                         optimizer_instance,
-                                         scheduler_instance,
-                                         num_epochs=5,
-                                         accelerator=accelerator,
-                                         log_to_wandb=False)
-    final_acc = accuracies_trial[-1]
-    return -final_acc  # Negative accuracy for minimization
+    # Train for 5 epochs without saving checkpoints
+    _, _, val_accs, _ = train_model(model_instance,
+                                    train_dataloader,
+                                    optimizer_instance,
+                                    scheduler_instance,
+                                    num_epochs=5,
+                                    accelerator=accelerator,
+                                    output_dir="temp_output",
+                                    log_to_wandb=False,
+                                    val_loader=val_dataloader,
+                                    save_checkpoints=False)
+    final_val_acc = val_accs[-1]
+    print(f"[Optuna] Trial completed with validation accuracy: {final_val_acc:.4f}")
+    return -final_val_acc  # Negative accuracy for minimization
 
 ##############################################################################
 #                                   Main Function
@@ -647,13 +594,16 @@ def main() -> None:
       2. Initialize Accelerator.
       3. Load data and generate UMAP visualization.
       4. Extract textual embeddings.
-      5. Build label mappings and dataset.
-      6. Perform hyperparameter optimization with Optuna.
-      7. Train the final model.
-      8. Plot training curves and visualize cross-attention.
-      9. Save final results and model checkpoint.
+      5. Build label mappings and create dataset.
+      6. Split the dataset into training, validation, and test sets.
+      7. Perform hyperparameter optimization with Optuna.
+      8. Train the final model on the training set (with epoch-level evaluation, checkpointing, and early stopping).
+      9. Evaluate the final (best) model on the test set.
+     10. Print sample predictions from the test set.
+     11. Plot training curves and visualize cross-attention.
+     12. Save final results and model checkpoint.
     """
-    global textual_embeddings, accelerator, omics_data, dataloader, donor_map
+    global textual_embeddings, accelerator, omics_data, train_dataloader, val_dataloader, test_dataloader, donor_map
 
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -684,12 +634,27 @@ def main() -> None:
     donor_labels = [donor_map[d] for d in adata.obs["donor_id"]]
     sex_labels = [sex_map[s.lower()] if s.lower() in sex_map else 0 for s in adata.obs["sex"]]
 
-    # 4. Build dataset and DataLoader for training
+    # 4. Build dataset from omics and textual embeddings
     omics_data = adata.obsm["geneformer"]
     dataset = SingleCellDataset(omics_data, textual_embeddings, donor_labels, sex_labels)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
 
-    # 5. Hyperparameter Optimization using shared Optuna storage
+    # 5. Split dataset into training (70%), validation (15%), and test (15%) sets
+    total_size = len(dataset)
+    train_size = int(0.7 * total_size)
+    val_size = int(0.15 * total_size)
+    test_size = total_size - train_size - val_size
+    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
+    print(f"[Data] Dataset split into Train: {len(train_dataset)}, Validation: {len(val_dataset)}, Test: {len(test_dataset)}")
+
+    # 6. Create dataloaders for each split
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+
+    # Prepare dataloaders with Accelerator (prepare all splits)
+    train_dataloader, val_dataloader, test_dataloader = accelerator.prepare(train_dataloader, val_dataloader, test_dataloader)
+
+    # 7. Hyperparameter Optimization using shared Optuna storage on training/validation splits
     storage_name = "sqlite:///optuna_study.db"
     study = optuna.create_study(direction="minimize",
                                 storage=storage_name,
@@ -699,21 +664,20 @@ def main() -> None:
     accelerator.wait_for_everyone()  # Wait for all processes to complete
     best_params = study.best_params
     current_best_acc = -study.best_value
-    print(f"[Optuna] Best hyperparameters from Optuna: {best_params} "
-          f"with accuracy {current_best_acc:.4f}")
+    print(f"[Optuna] Best hyperparameters from Optuna: {best_params} with validation accuracy {current_best_acc:.4f}")
 
-    # 6. Save best hyperparameters to disk
+    # Save best hyperparameters to disk
     best_hp_path = os.path.join(args.output_dir, "best_hyperparameters.json")
-    final_hp_results = {"best_params": best_params, "final_accuracy": current_best_acc}
+    final_hp_results = {"best_params": best_params, "final_validation_accuracy": current_best_acc}
     with open(best_hp_path, "w") as f:
         json.dump(final_hp_results, f, indent=4)
     print(f"[Main] Best hyperparameters saved to {best_hp_path}")
 
-    # 7. Initialize wandb logging if enabled
+    # 8. Initialize wandb logging if enabled
     if args.use_wandb:
         wandb.init(project="cz-biohub-test", config=best_params, reinit=True)
 
-    # 8. Build the final model with the best hyperparameters
+    # 9. Build the final model with the best hyperparameters
     num_donors = len(donor_map)
     model = MultiModalModel(
         omics_dim=omics_data.shape[1],
@@ -729,65 +693,61 @@ def main() -> None:
     )
 
     optimizer = optim.Adam(model.parameters(), lr=best_params["lr"], weight_decay=1e-4)
-    total_steps = len(dataloader) * args.num_epochs
+    total_steps = len(train_dataloader) * args.num_epochs
     warmup_steps = int(0.1 * total_steps)
     scheduler = get_cosine_schedule_with_warmup(optimizer,
                                                 num_warmup_steps=warmup_steps,
                                                 num_training_steps=total_steps)
 
-    # Prepare model, optimizer, dataloader, and scheduler with Accelerator
-    model, optimizer, dataloader, scheduler = accelerator.prepare(model,
-                                                                  optimizer,
-                                                                  dataloader,
-                                                                  scheduler)
+    # Prepare model, optimizer, and training dataloader with Accelerator
+    model, optimizer, train_dataloader, scheduler = accelerator.prepare(model,
+                                                                        optimizer,
+                                                                        train_dataloader,
+                                                                        scheduler)
 
-    # 9. Train the model with full training epochs
-    donor_losses, adv_losses, accuracies = train_model(model,
-                                                       dataloader,
-                                                       optimizer,
-                                                       scheduler,
-                                                       args.num_epochs,
-                                                       accelerator,
-                                                       log_to_wandb=args.use_wandb)
+    # Create a temporary directory for saving checkpoints during training
+    temp_dir = os.path.join(args.output_dir, "temp")
+    os.makedirs(temp_dir, exist_ok=True)
 
-    # 10. Plot and save training curves
-    epochs = range(1, args.num_epochs + 1)
+    # 10. Train the model using the training set (with evaluation on val and test sets and checkpointing)
+    train_accs, val_accs, test_accs, epochs_trained = train_model(
+        model,
+        train_dataloader,
+        optimizer,
+        scheduler,
+        num_epochs=args.num_epochs,
+        accelerator=accelerator,
+        output_dir=temp_dir,
+        log_to_wandb=args.use_wandb,
+        val_loader=val_dataloader,
+        test_loader=test_dataloader,
+        early_stopping_patience=3,
+        save_checkpoints=True
+    )
+
+    # 11. Plot and save training curves (Train, Validation, and Test Accuracy)
     training_curves_path = os.path.join(args.output_dir, "training_curves.png")
-    plt.figure(figsize=(18, 5))
-    plt.subplot(1, 3, 1)
-    plt.plot(epochs, donor_losses, label="Donor Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Donor Loss")
-    plt.legend()
-
-    plt.subplot(1, 3, 2)
-    plt.plot(epochs, adv_losses, label="Adversarial Loss", color="orange")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Adversarial Loss")
-    plt.legend()
-
-    plt.subplot(1, 3, 3)
-    plt.plot(epochs, accuracies, label="Accuracy", color="green")
+    plt.figure(figsize=(12, 6))
+    plt.plot(epochs_trained, train_accs, label="Train Accuracy")
+    plt.plot(epochs_trained, val_accs, label="Validation Accuracy")
+    plt.plot(epochs_trained, test_accs, label="Test Accuracy")
     plt.xlabel("Epoch")
     plt.ylabel("Accuracy")
-    plt.title("Donor ID Prediction Accuracy")
+    plt.title("Accuracy Curves")
     plt.legend()
-
     plt.tight_layout()
     plt.savefig(training_curves_path)
     plt.close()
     print(f"[Main] Training curves saved to {training_curves_path}")
 
-    # 11. Visualize Perceiver Resampler cross-attention for a single sample
+    # 12. Visualize Perceiver Resampler cross-attention for a single sample
     model.eval()
-    single_loader = DataLoader(dataset, batch_size=1, shuffle=True)
+    single_loader = DataLoader(test_dataset, batch_size=1, shuffle=True)
+    single_loader = accelerator.prepare(single_loader)
     sample_omics, sample_text, _, _ = next(iter(single_loader))
     sample_omics = sample_omics.to(accelerator.device)
     sample_text = sample_text.to(accelerator.device)
 
-    # Retrieve cross-attention weights from the Perceiver Resampler
     with torch.no_grad():
         _, _, _, attn_resampler = model(sample_omics, sample_text)
 
@@ -811,28 +771,58 @@ def main() -> None:
     plt.close()
     print(f"[Main] Perceiver cross-attention heatmap saved to {cross_attn_path}")
 
-    # 12. Save final results (best hyperparameters and final accuracy)
-    final_results = {"best_params": best_params, "final_accuracy": accuracies[-1]}
+    # 13. Load the best model (saved during training) for final evaluation.
+    best_model_path = os.path.join(temp_dir, "best_model.pt")
+    best_model_state = torch.load(best_model_path, map_location=accelerator.device)
+    # Load the state_dict into the raw model (unwrapped) to avoid key mismatches
+    accelerator.unwrap_model(model).load_state_dict(best_model_state)
+    print(f"[Main] Loaded best model from {best_model_path} for final evaluation.")
+
+    # 14. Evaluate the final model on the test set
+    final_test_donor_loss, final_test_adv_loss, final_test_acc = evaluate_model_full(model, test_dataloader, accelerator)
+    print(f"[Test] Final Test Donor Loss: {final_test_donor_loss:.4f}, Adv Loss: {final_test_adv_loss:.4f}, Accuracy: {final_test_acc:.4f}")
+
+    # 15. Print sample predictions from the test set.
+    donor_inv_map = {v: k for k, v in donor_map.items()}
+    sample_predictions(model, test_dataloader, accelerator, donor_inv_map, num_samples=5)
+
+    # 16. Save final results (best hyperparameters and final accuracies)
+    final_results = {"best_params": best_params,
+                     "final_train_accuracy": train_accs[-1],
+                     "final_validation_accuracy": val_accs[-1],
+                     "final_test_accuracy": final_test_acc,
+                     "final_test_donor_loss": final_test_donor_loss,
+                     "final_test_adv_loss": final_test_adv_loss}
     with open(best_hp_path, "w") as f:
         json.dump(final_results, f, indent=4)
-    print(f"[Main] Best hyperparameters and final accuracy saved to {best_hp_path}")
+    print(f"[Main] Best hyperparameters and final results saved to {best_hp_path}")
 
-    # 13. Save model checkpoint
+    # 17. Save model checkpoint (final model)
     save_model(model, args.output_dir, accelerator)
 
-    # 14. Finalize wandb logging if enabled
+    # 18. Finalize wandb logging if enabled
     if args.use_wandb:
-        wandb.log({"final_accuracy": accuracies[-1]})
+        wandb.log({
+            "final_train_accuracy": train_accs[-1],
+            "final_validation_accuracy": val_accs[-1],
+            "final_test_accuracy": final_test_acc,
+            "final_test_donor_loss": final_test_donor_loss,
+            "final_test_adv_loss": final_test_adv_loss,
+        })
         wandb.finish()
 
-    # 15. Print final summary of results
+    # 19. Print final summary of results
     print("\n[Main] Final Results Summary:")
     print(f" - Number of cells loaded: {adata.n_obs}")
     print(f" - UMAP plot saved at: {umap_path}")
     print(f" - Training curves saved at: {training_curves_path}")
     print(f" - Perceiver cross-attention heatmap saved at: {cross_attn_path}")
-    print(f" - Best hyperparameters saved at: {best_hp_path}")
-    print(f" - Final donor ID prediction accuracy: {accuracies[-1]:.4f}")
+    print(f" - Best hyperparameters and final results saved at: {best_hp_path}")
+    print(f" - Final Train Accuracy: {train_accs[-1]:.4f}")
+    print(f" - Final Validation Accuracy: {val_accs[-1]:.4f}")
+    print(f" - Final Test Accuracy: {final_test_acc:.4f}")
+    print(f" - Final Test Donor Loss: {final_test_donor_loss:.4f}")
+    print(f" - Final Test Adv Loss: {final_test_adv_loss:.4f}")
 
 if __name__ == "__main__":
     main()

@@ -3,6 +3,7 @@
 <!-- TODO: format code properly like surgury-copilot -->
 <!-- TODO: add earlystopping and other methods to look out for overfitting and create validation set -->
 <!-- TODO: figure out heatmap issue -->
+<!-- TODO: Discuss whether the pretraining of the Perceiver Resampler helped or hurt model performance, and whether incorporating cell type textual embeddings improved accuracy compared to using transcriptomic data alone. -->
 
 <!-- TODO: list all deliverables -->
 <!-- TODO: figure out how to best deliver the model -->
