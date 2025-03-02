@@ -6,9 +6,9 @@
         "latent_dim": 256,
         "adv_lambda": 0.35824957883020864
     },
-    "final_train_accuracy": 0.9103807471264368,
-    "final_validation_accuracy": 0.7528782894736842,
-    "final_test_accuracy": 0.8022203947368421,
-    "final_test_donor_loss": 1.2628600236616636,
-    "final_test_adv_loss": 0.3892333754583409
+    "final_validation_accuracy": null,
+    "final_train_accuracy": null,
+    "final_test_accuracy": 0.8104440789473685,
+    "final_test_donor_loss": 1.3892275369481037,
+    "final_test_adv_loss": 0.40325971143810374
 }

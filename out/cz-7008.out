@@ -1,0 +1,238 @@
+
+conda 24.3.0
+
+========================================
+Power outage scheduled on Mar 18 and 19.
+========================================
+
+==== Job Debug Info ====
+NUM_MACHINES=1
+NUM_PROCESSES=2
+MACHINE_RANK=0
+GPU_IDS=0,1
+OMP_NUM_THREADS=10
+MAIN_IP=ia1
+========================
+Port 29550 is available.
+Selected port: 29550
+Job started on Sun Mar  2 05:06:43 PM EST 2025
+/var/lib/slurm/slurmd/job07008/slurm_script: line 88: --search-hparams --train-model: command not found
+The following values were not passed to `accelerate launch` and had defaults used instead:
+		More than one GPU was found, enabling multi-GPU training.
+		If this was unintended please pass in `--num_processes=1`.
+	`--mixed_precision` was set to a value of `'no'`
+	`--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+[I302 17:06:46.081311048 socket.cpp:938] [c10d] The client socket has connected to [localhost]:29550 on SocketImpl(fd=21, addr=[localhost]:58760, remote=[localhost]:29550).
+[I302 17:06:52.211874596 socket.cpp:938] [c10d] The client socket has connected to [localhost]:29550 on SocketImpl(fd=21, addr=[localhost]:41894, remote=[localhost]:29550).
+[W302 17:06:52.212780208 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[I302 17:06:52.212880378 ProcessGroupNCCL.cpp:905] [PG ID 0 PG GUID 0 Rank 0] ProcessGroupNCCL initialization options: size: 2, global rank: 0, TIMEOUT(ms): 600000, USE_HIGH_PRIORITY_STREAM: 0, SPLIT_FROM: 0, SPLIT_COLOR: 0, PG Name: 0
+[I302 17:06:52.212891357 ProcessGroupNCCL.cpp:914] [PG ID 0 PG GUID 0 Rank 0] ProcessGroupNCCL environments: NCCL version: 2.21.5, TORCH_NCCL_ASYNC_ERROR_HANDLING: 1, TORCH_NCCL_DUMP_ON_TIMEOUT: 0, TORCH_NCCL_WAIT_TIMEOUT_DUMP_MILSEC: 60000, TORCH_NCCL_DESYNC_DEBUG: 0, TORCH_NCCL_ENABLE_TIMING: 0, TORCH_NCCL_BLOCKING_WAIT: 0, TORCH_DISTRIBUTED_DEBUG: OFF, TORCH_NCCL_USE_TENSOR_REGISTER_ALLOCATOR_HOOK: 0, TORCH_NCCL_ENABLE_MONITORING: 1, TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 480, TORCH_NCCL_TRACE_BUFFER_SIZE: 0, TORCH_NCCL_COORD_CHECK_MILSEC: 1000, TORCH_NCCL_NAN_CHECK: 0, TORCH_NCCL_CUDA_EVENT_CACHE: 0, TORCH_NCCL_LOG_CPP_STACK_ON_UNCLEAN_SHUTDOWN: 1
+[I302 17:06:52.280896097 socket.cpp:938] [c10d] The client socket has connected to [localhost]:29550 on SocketImpl(fd=21, addr=[localhost]:41908, remote=[localhost]:29550).
+[W302 17:06:52.281776299 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[I302 17:06:52.281872044 ProcessGroupNCCL.cpp:905] [PG ID 0 PG GUID 0 Rank 1] ProcessGroupNCCL initialization options: size: 2, global rank: 1, TIMEOUT(ms): 600000, USE_HIGH_PRIORITY_STREAM: 0, SPLIT_FROM: 0, SPLIT_COLOR: 0, PG Name: 0
+[I302 17:06:52.281882397 ProcessGroupNCCL.cpp:914] [PG ID 0 PG GUID 0 Rank 1] ProcessGroupNCCL environments: NCCL version: 2.21.5, TORCH_NCCL_ASYNC_ERROR_HANDLING: 1, TORCH_NCCL_DUMP_ON_TIMEOUT: 0, TORCH_NCCL_WAIT_TIMEOUT_DUMP_MILSEC: 60000, TORCH_NCCL_DESYNC_DEBUG: 0, TORCH_NCCL_ENABLE_TIMING: 0, TORCH_NCCL_BLOCKING_WAIT: 0, TORCH_DISTRIBUTED_DEBUG: OFF, TORCH_NCCL_USE_TENSOR_REGISTER_ALLOCATOR_HOOK: 0, TORCH_NCCL_ENABLE_MONITORING: 1, TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 480, TORCH_NCCL_TRACE_BUFFER_SIZE: 0, TORCH_NCCL_COORD_CHECK_MILSEC: 1000, TORCH_NCCL_NAN_CHECK: 0, TORCH_NCCL_CUDA_EVENT_CACHE: 0, TORCH_NCCL_LOG_CPP_STACK_ON_UNCLEAN_SHUTDOWN: 1
+[Main] Accelerator initialized on device: cuda:0
+[Main] Accelerator initialized on device: cuda:1
+[Data] Loaded 31780 cells.
+[Data] Loaded 31780 cells.
+[Data] UMAP plot saved to output/umap_geneformer.png
+Extracting Textual Embeddings...
+[Data] UMAP plot saved to output/umap_geneformer.png
+Extracting Textual Embeddings...
+[Text] Textual embeddings shape: (31780, 768)
+Textual Embeddings Extracted!!!
+[Data] Dataset split into Train: 22246, Validation: 4767, Test: 4767
+[Main] Loading best hyperparameters from best_hyperparameters.json...
+[Main] Loaded best hyperparameters: {'lr': 0.0005947012811791727, 'dropout': 0.11378010821029086, 'num_latents': 61, 'latent_dim': 256, 'adv_lambda': 0.35824957883020864}, with val acc: 0.0000
+[Model] Initializing CrossAttentionBlock (d_model=256, n_heads=8)
+[Model] Initializing CrossAttentionBlock (d_model=256, n_heads=8)
+wandb: Using wandb-core as the SDK backend.  Please refer to https://wandb.me/wandb-core for more information.
+wandb: Currently logged in as: angadsandhu (ouroboroos) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.19.7
+wandb: Run data is saved locally in /home/asandhu9/cz-biohub-test/wandb/run-20250302_171130-00krp7f2
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run soft-waterfall-39
+wandb: ⭐️ View project at https://wandb.ai/ouroboroos/cz-biohub-test
+wandb: 🚀 View run at https://wandb.ai/ouroboroos/cz-biohub-test/runs/00krp7f2
+[Main] Skipping training. Loading final_model.pt...
+[Main] Loaded final model from output/final_model.pt.
+ia1:880956:880956 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:880956:880956 [0] NCCL INFO Bootstrap : Using eno1:162.129.223.66<0>
+ia1:880956:880956 [0] NCCL INFO NET/Plugin: No plugin found (libnccl-net.so)
+ia1:880956:880956 [0] NCCL INFO NET/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-net.so
+ia1:880956:880956 [0] NCCL INFO NET/Plugin: Using internal network plugin.
+[rank0]:[I302 17:11:31.301837155 ProcessGroupNCCL.cpp:2262] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL broadcast unique ID through store took 0.056386 ms
+ia1:880956:880956 [0] NCCL INFO cudaDriverVersion 12040
+NCCL version 2.21.5+cuda12.4
+ia1:880956:885973 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:880956:885973 [0] NCCL INFO NET/IB : No device found.
+ia1:880956:885973 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:880956:885973 [0] NCCL INFO NET/Socket : Using [0]eno1:162.129.223.66<0>
+ia1:880956:885973 [0] NCCL INFO Using non-device net plugin version 0
+ia1:880956:885973 [0] NCCL INFO Using network Socket
+[Text] Textual embeddings shape: (31780, 768)
+Textual Embeddings Extracted!!!
+[Data] Dataset split into Train: 22246, Validation: 4767, Test: 4767
+[Main] Loading best hyperparameters from best_hyperparameters.json...
+[Main] Loaded best hyperparameters: {'lr': 0.0005947012811791727, 'dropout': 0.11378010821029086, 'num_latents': 61, 'latent_dim': 256, 'adv_lambda': 0.35824957883020864}, with val acc: 0.0000
+[Model] Initializing CrossAttentionBlock (d_model=256, n_heads=8)
+[Model] Initializing CrossAttentionBlock (d_model=256, n_heads=8)
+wandb: Using wandb-core as the SDK backend.  Please refer to https://wandb.me/wandb-core for more information.
+wandb: Currently logged in as: angadsandhu (ouroboroos) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.19.7
+wandb: Run data is saved locally in /home/asandhu9/cz-biohub-test/wandb/run-20250302_171148-izmu0spq
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run astral-terrain-40
+wandb: ⭐️ View project at https://wandb.ai/ouroboroos/cz-biohub-test
+wandb: 🚀 View run at https://wandb.ai/ouroboroos/cz-biohub-test/runs/izmu0spq
+[Main] Skipping training. Loading final_model.pt...
+[Main] Loaded final model from output/final_model.pt.
+[rank1]:[I302 17:11:49.150132694 ProcessGroupNCCL.cpp:2262] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL broadcast unique ID through store took 0.245702 ms
+ia1:880957:880957 [1] NCCL INFO cudaDriverVersion 12040
+ia1:880957:880957 [1] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:880957:880957 [1] NCCL INFO Bootstrap : Using eno1:162.129.223.66<0>
+ia1:880957:880957 [1] NCCL INFO NET/Plugin: No plugin found (libnccl-net.so)
+ia1:880957:880957 [1] NCCL INFO NET/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-net.so
+ia1:880957:880957 [1] NCCL INFO NET/Plugin: Using internal network plugin.
+ia1:880957:886094 [1] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:880957:886094 [1] NCCL INFO NET/IB : No device found.
+ia1:880957:886094 [1] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:880957:886094 [1] NCCL INFO NET/Socket : Using [0]eno1:162.129.223.66<0>
+ia1:880957:886094 [1] NCCL INFO Using non-device net plugin version 0
+ia1:880957:886094 [1] NCCL INFO Using network Socket
+ia1:880957:886094 [1] NCCL INFO ncclCommInitRank comm 0x5560165b9200 rank 1 nranks 2 cudaDev 1 nvmlDev 1 busId 20000 commId 0xcaa25e408710c702 - Init START
+ia1:880956:885973 [0] NCCL INFO ncclCommInitRank comm 0x55ec02398920 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId a000 commId 0xcaa25e408710c702 - Init START
+ia1:880957:886094 [1] NCCL INFO Setting affinity for GPU 1 to 1f,00000000,0000001f
+ia1:880956:885973 [0] NCCL INFO Setting affinity for GPU 0 to 1f,00000000,0000001f
+ia1:880957:886094 [1] NCCL INFO comm 0x5560165b9200 rank 1 nRanks 2 nNodes 1 localRanks 2 localRank 1 MNNVL 0
+ia1:880956:885973 [0] NCCL INFO comm 0x55ec02398920 rank 0 nRanks 2 nNodes 1 localRanks 2 localRank 0 MNNVL 0
+ia1:880956:885973 [0] NCCL INFO Channel 00/02 :    0   1
+ia1:880957:886094 [1] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] -1/-1/-1->1->0
+ia1:880956:885973 [0] NCCL INFO Channel 01/02 :    0   1
+ia1:880957:886094 [1] NCCL INFO P2P Chunksize set to 131072
+ia1:880956:885973 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1
+ia1:880956:885973 [0] NCCL INFO P2P Chunksize set to 131072
+ia1:880956:885973 [0] NCCL INFO Channel 00 : 0[0] -> 1[1] via SHM/direct/direct
+ia1:880957:886094 [1] NCCL INFO Channel 00 : 1[1] -> 0[0] via SHM/direct/direct
+ia1:880956:885973 [0] NCCL INFO Channel 01 : 0[0] -> 1[1] via SHM/direct/direct
+ia1:880957:886094 [1] NCCL INFO Channel 01 : 1[1] -> 0[0] via SHM/direct/direct
+ia1:880956:885973 [0] NCCL INFO Connected all rings
+ia1:880956:885973 [0] NCCL INFO Connected all trees
+ia1:880957:886094 [1] NCCL INFO Connected all rings
+ia1:880957:886094 [1] NCCL INFO Connected all trees
+ia1:880957:886094 [1] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+ia1:880957:886094 [1] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 2 p2p channels per peer
+ia1:880956:885973 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+ia1:880956:885973 [0] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 2 p2p channels per peer
+ia1:880957:886094 [1] NCCL INFO TUNER/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-tuner.so
+ia1:880957:886094 [1] NCCL INFO TUNER/Plugin: Using internal tuner plugin.
+ia1:880957:886094 [1] NCCL INFO ncclCommInitRank comm 0x5560165b9200 rank 1 nranks 2 cudaDev 1 nvmlDev 1 busId 20000 commId 0xcaa25e408710c702 - Init COMPLETE
+ia1:880956:885973 [0] NCCL INFO TUNER/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-tuner.so
+ia1:880956:885973 [0] NCCL INFO TUNER/Plugin: Using internal tuner plugin.
+ia1:880956:885973 [0] NCCL INFO ncclCommInitRank comm 0x55ec02398920 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId a000 commId 0xcaa25e408710c702 - Init COMPLETE
+[rank1]:[I302 17:11:49.394131304 ProcessGroupNCCL.cpp:2301] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL created ncclComm_ 0x5560165b9200 on CUDA device: 
+[rank1]:[I302 17:11:49.394153491 ProcessGroupNCCL.cpp:2306] [PG ID 0 PG GUID 0(default_pg) Rank 1] NCCL_DEBUG: INFO
+[rank0]:[I302 17:11:49.399874134 ProcessGroupNCCL.cpp:2301] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL created ncclComm_ 0x55ec02398920 on CUDA device:  
+[rank0]:[I302 17:11:49.399910763 ProcessGroupNCCL.cpp:2306] [PG ID 0 PG GUID 0(default_pg) Rank 0] NCCL_DEBUG: INFO
+[Test] Final Test Donor Loss: 1.3892, Adv Loss: 0.4033, Accuracy: 0.8104
+
+[Sample Predictions]
+[Test] Final Test Donor Loss: 1.5034, Adv Loss: 0.3933, Accuracy: 0.7965
+
+[Sample Predictions]
+Sample 1: Predicted Donor: SD046/16, True Donor: SD046/16
+Sample 2: Predicted Donor: SD036/17, True Donor: SD036/17
+Sample 3: Predicted Donor: SD036/17, True Donor: SD036/17
+Sample 4: Predicted Donor: SD042/18, True Donor: SD042/18
+Sample 5: Predicted Donor: SD030/18, True Donor: SD038/17
+Sample 1: Predicted Donor: SD026/16, True Donor: SD026/16
+Sample 2: Predicted Donor: SD030/18, True Donor: SD030/18
+Sample 3: Predicted Donor: SD030/18, True Donor: SD030/18
+Sample 4: Predicted Donor: SD030/18, True Donor: SD030/18
+Sample 5: Predicted Donor: SD026/16, True Donor: SD026/16
+[Main] Best hyperparameters and final results saved to output/best_hyperparameters.json
+[Main] Best hyperparameters and final results saved to output/best_hyperparameters.json
+[Debug] attn_resampler shape: torch.Size([1, 61, 8])
+[Debug] attn_resampler shape: torch.Size([1, 61, 8])
+[Main] Perceiver cross-attention heatmap saved to output/perceiver_attention_heatmap.png
+[Main] Perceiver cross-attention heatmap saved to output/perceiver_attention_heatmap.png
+wandb:                                                                                
+wandb:                                                                                
+wandb: 
+wandb: Run history:
+wandb:   final_test_accuracy ▁
+wandb:   final_test_adv_loss ▁
+wandb: final_test_donor_loss ▁
+wandb: 
+wandb: Run summary:
+wandb:   final_test_accuracy 0.81044
+wandb:   final_test_adv_loss 0.40326
+wandb: final_test_donor_loss 1.38923
+wandb: 
+wandb: 🚀 View run astral-terrain-40 at: https://wandb.ai/ouroboroos/cz-biohub-test/runs/izmu0spq
+wandb: ⭐️ View project at: https://wandb.ai/ouroboroos/cz-biohub-test
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20250302_171148-izmu0spq/logs
+
+[Main] Final Results Summary:
+ - Number of cells loaded: 31780
+ - UMAP plot saved at: output/umap_geneformer.png
+ - Training curves saved at: output/training_curves.png
+ - Perceiver cross-attention heatmap saved at: output/perceiver_attention_heatmap.png
+ - Best hyperparameters and final results saved at: output/best_hyperparameters.json
+ - Final Test Accuracy: 0.8104
+ - Final Test Donor Loss: 1.3892
+ - Final Test Adv Loss: 0.4033
+wandb: 
+wandb: Run history:
+wandb:   final_test_accuracy ▁
+wandb:   final_test_adv_loss ▁
+wandb: final_test_donor_loss ▁
+wandb: 
+wandb: Run summary:
+wandb:   final_test_accuracy 0.79646
+wandb:   final_test_adv_loss 0.39327
+wandb: final_test_donor_loss 1.50342
+wandb: 
+wandb: 🚀 View run soft-waterfall-39 at: https://wandb.ai/ouroboroos/cz-biohub-test/runs/00krp7f2
+wandb: ⭐️ View project at: https://wandb.ai/ouroboroos/cz-biohub-test
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20250302_171130-00krp7f2/logs
+
+[Main] Final Results Summary:
+ - Number of cells loaded: 31780
+ - UMAP plot saved at: output/umap_geneformer.png
+ - Training curves saved at: output/training_curves.png
+ - Perceiver cross-attention heatmap saved at: output/perceiver_attention_heatmap.png
+ - Best hyperparameters and final results saved at: output/best_hyperparameters.json
+ - Final Test Accuracy: 0.7965
+ - Final Test Donor Loss: 1.5034
+ - Final Test Adv Loss: 0.3933
+[rank1]:[I302 17:11:55.098260790 ProcessGroupNCCL.cpp:1246] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL destructor entered.
+[rank1]:[I302 17:11:55.098300763 ProcessGroupNCCL.cpp:1230] [PG ID 0 PG GUID 0(default_pg) Rank 1] Launching ProcessGroupNCCL abort asynchrounously.
+[rank1]:[I302 17:11:55.098479937 ProcessGroupNCCL.cpp:1184] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL destroying ncclComm_ 0x5560165b9200 on CUDA device: 1
+[rank1]:[I302 17:11:55.098520652 NCCLUtils.hpp:406] Aborting ncclComm_ 0x5560165b9200 with reason: No abort reason provided.
+ia1:880957:886095 [1] NCCL INFO [Service thread] Connection closed by localRank 1
+[rank0]:[I302 17:11:55.237837829 ProcessGroupNCCL.cpp:1246] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL destructor entered.
+[rank0]:[W302 17:11:55.237868937 ProcessGroupNCCL.cpp:1250] Warning: WARNING: process group has NOT been destroyed before we destruct ProcessGroupNCCL. On normal program exit, the application should call destroy_process_group to ensure that any pending NCCL operations have finished in this process. In rare cases this process can exit before this point and block the progress of another member of the process group. This constraint has always been present,  but this warning has only been added since PyTorch 2.4 (function operator())
+[rank0]:[I302 17:11:55.237892061 ProcessGroupNCCL.cpp:1230] [PG ID 0 PG GUID 0(default_pg) Rank 0] Launching ProcessGroupNCCL abort asynchrounously.
+[rank0]:[I302 17:11:55.238054786 ProcessGroupNCCL.cpp:1184] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL destroying ncclComm_ 0x55ec02398920 on CUDA device: 0
+[rank0]:[I302 17:11:55.238089506 NCCLUtils.hpp:406] Aborting ncclComm_ 0x55ec02398920 with reason: No abort reason provided.
+ia1:880956:886096 [0] NCCL INFO [Service thread] Connection closed by localRank 0
+ia1:880957:887302 [1] NCCL INFO comm 0x5560165b9200 rank 1 nranks 2 cudaDev 1 busId 20000 - Abort COMPLETE
+[rank1]:[I302 17:11:55.623949400 ProcessGroupNCCL.cpp:1197] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL destroyed  communicator on CUDA device: 1
+[rank1]:[I302 17:11:55.624102638 ProcessGroupNCCL.cpp:1116] [PG ID 0 PG GUID 0(default_pg) Rank 1] future is successfully executed for: ProcessGroup abort
+[rank1]:[I302 17:11:55.624132855 ProcessGroupNCCL.cpp:1237] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL aborts successfully.
+[rank1]:[I302 17:11:55.624179479 ProcessGroupNCCL.cpp:1267] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL watchdog thread joined.
+[rank1]:[I302 17:11:55.624515928 ProcessGroupNCCL.cpp:1271] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL heart beat monitor thread joined.
+ia1:880956:887303 [0] NCCL INFO comm 0x55ec02398920 rank 0 nranks 2 cudaDev 0 busId a000 - Abort COMPLETE
+[rank0]:[I302 17:11:55.764631480 ProcessGroupNCCL.cpp:1197] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL destroyed  communicator on CUDA device: 0
+[rank0]:[I302 17:11:55.764898148 ProcessGroupNCCL.cpp:1116] [PG ID 0 PG GUID 0(default_pg) Rank 0] future is successfully executed for: ProcessGroup abort
+[rank0]:[I302 17:11:55.764931375 ProcessGroupNCCL.cpp:1237] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL aborts successfully.
+[rank0]:[I302 17:11:55.764983760 ProcessGroupNCCL.cpp:1267] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL watchdog thread joined.
+[rank0]:[I302 17:11:55.765063026 ProcessGroupNCCL.cpp:1271] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL heart beat monitor thread joined.
+[I302 17:11:57.323390087 TCPStoreLibUvBackend.cpp:1128] [c10d] uv_loop_close failed with:-16 errn:EBUSY desc:resource busy or locked
+[I302 17:11:57.323472942 TCPStoreLibUvBackend.cpp:1138] [c10d] uv_loop cleanup finished.
+Job completed on Sun Mar  2 05:11:57 PM EST 2025
+Process Time Elapsed: 0d 0h 5m 14s

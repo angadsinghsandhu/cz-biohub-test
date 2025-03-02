@@ -1,0 +1,228 @@
+
+conda 24.3.0
+
+========================================
+Power outage scheduled on Mar 18 and 19.
+========================================
+
+==== Job Debug Info ====
+NUM_MACHINES=1
+NUM_PROCESSES=2
+MACHINE_RANK=0
+GPU_IDS=0,1
+OMP_NUM_THREADS=10
+MAIN_IP=ia1
+========================
+Port 29550 is available.
+Selected port: 29550
+Job started on Sun Mar  2 04:55:32 PM EST 2025
+/var/lib/slurm/slurmd/job07007/slurm_script: line 88: --search-hparams --train-model: command not found
+The following values were not passed to `accelerate launch` and had defaults used instead:
+		More than one GPU was found, enabling multi-GPU training.
+		If this was unintended please pass in `--num_processes=1`.
+	`--mixed_precision` was set to a value of `'no'`
+	`--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+[I302 16:55:34.789028107 socket.cpp:938] [c10d] The client socket has connected to [localhost]:29550 on SocketImpl(fd=21, addr=[localhost]:52916, remote=[localhost]:29550).
+[I302 16:55:41.132242452 socket.cpp:938] [c10d] The client socket has connected to [localhost]:29550 on SocketImpl(fd=21, addr=[localhost]:54166, remote=[localhost]:29550).
+[W302 16:55:41.133016398 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[I302 16:55:41.133080124 ProcessGroupNCCL.cpp:905] [PG ID 0 PG GUID 0 Rank 1] ProcessGroupNCCL initialization options: size: 2, global rank: 1, TIMEOUT(ms): 600000, USE_HIGH_PRIORITY_STREAM: 0, SPLIT_FROM: 0, SPLIT_COLOR: 0, PG Name: 0
+[I302 16:55:41.133123181 ProcessGroupNCCL.cpp:914] [PG ID 0 PG GUID 0 Rank 1] ProcessGroupNCCL environments: NCCL version: 2.21.5, TORCH_NCCL_ASYNC_ERROR_HANDLING: 1, TORCH_NCCL_DUMP_ON_TIMEOUT: 0, TORCH_NCCL_WAIT_TIMEOUT_DUMP_MILSEC: 60000, TORCH_NCCL_DESYNC_DEBUG: 0, TORCH_NCCL_ENABLE_TIMING: 0, TORCH_NCCL_BLOCKING_WAIT: 0, TORCH_DISTRIBUTED_DEBUG: OFF, TORCH_NCCL_USE_TENSOR_REGISTER_ALLOCATOR_HOOK: 0, TORCH_NCCL_ENABLE_MONITORING: 1, TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 480, TORCH_NCCL_TRACE_BUFFER_SIZE: 0, TORCH_NCCL_COORD_CHECK_MILSEC: 1000, TORCH_NCCL_NAN_CHECK: 0, TORCH_NCCL_CUDA_EVENT_CACHE: 0, TORCH_NCCL_LOG_CPP_STACK_ON_UNCLEAN_SHUTDOWN: 1
+[I302 16:55:41.140394948 socket.cpp:938] [c10d] The client socket has connected to [localhost]:29550 on SocketImpl(fd=21, addr=[localhost]:54172, remote=[localhost]:29550).
+[W302 16:55:41.141011716 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[I302 16:55:41.141071501 ProcessGroupNCCL.cpp:905] [PG ID 0 PG GUID 0 Rank 0] ProcessGroupNCCL initialization options: size: 2, global rank: 0, TIMEOUT(ms): 600000, USE_HIGH_PRIORITY_STREAM: 0, SPLIT_FROM: 0, SPLIT_COLOR: 0, PG Name: 0
+[I302 16:55:41.141078686 ProcessGroupNCCL.cpp:914] [PG ID 0 PG GUID 0 Rank 0] ProcessGroupNCCL environments: NCCL version: 2.21.5, TORCH_NCCL_ASYNC_ERROR_HANDLING: 1, TORCH_NCCL_DUMP_ON_TIMEOUT: 0, TORCH_NCCL_WAIT_TIMEOUT_DUMP_MILSEC: 60000, TORCH_NCCL_DESYNC_DEBUG: 0, TORCH_NCCL_ENABLE_TIMING: 0, TORCH_NCCL_BLOCKING_WAIT: 0, TORCH_DISTRIBUTED_DEBUG: OFF, TORCH_NCCL_USE_TENSOR_REGISTER_ALLOCATOR_HOOK: 0, TORCH_NCCL_ENABLE_MONITORING: 1, TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 480, TORCH_NCCL_TRACE_BUFFER_SIZE: 0, TORCH_NCCL_COORD_CHECK_MILSEC: 1000, TORCH_NCCL_NAN_CHECK: 0, TORCH_NCCL_CUDA_EVENT_CACHE: 0, TORCH_NCCL_LOG_CPP_STACK_ON_UNCLEAN_SHUTDOWN: 1
+[Main] Accelerator initialized on device: cuda:0
+[Main] Accelerator initialized on device: cuda:1
+[Data] Loaded 31780 cells.
+[Data] Loaded 31780 cells.
+[Data] UMAP plot saved to output/umap_geneformer.png
+Extracting Textual Embeddings...
+[Data] UMAP plot saved to output/umap_geneformer.png
+Extracting Textual Embeddings...
+[Text] Textual embeddings shape: (31780, 768)
+Textual Embeddings Extracted!!!
+[Data] Dataset split into Train: 22246, Validation: 4767, Test: 4767
+[Main] Loading best hyperparameters from best_hyperparameters.json...
+[Main] Loaded best hyperparameters: {'lr': 0.0005947012811791727, 'dropout': 0.11378010821029086, 'num_latents': 61, 'latent_dim': 256, 'adv_lambda': 0.35824957883020864}, with val acc: 0.0000
+[Model] Initializing CrossAttentionBlock (d_model=256, n_heads=8)
+[Model] Initializing CrossAttentionBlock (d_model=256, n_heads=8)
+wandb: Using wandb-core as the SDK backend.  Please refer to https://wandb.me/wandb-core for more information.
+wandb: Currently logged in as: angadsandhu (ouroboroos) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.19.7
+wandb: Run data is saved locally in /home/asandhu9/cz-biohub-test/wandb/run-20250302_165959-cqhwt7am
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run glowing-energy-37
+wandb: ⭐️ View project at https://wandb.ai/ouroboroos/cz-biohub-test
+wandb: 🚀 View run at https://wandb.ai/ouroboroos/cz-biohub-test/runs/cqhwt7am
+[Main] Skipping training. Loading final_model.pt...
+[Main] Loaded final model from output/final_model.pt.
+ia1:872399:872399 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:872399:872399 [0] NCCL INFO Bootstrap : Using eno1:162.129.223.66<0>
+ia1:872399:872399 [0] NCCL INFO NET/Plugin: No plugin found (libnccl-net.so)
+ia1:872399:872399 [0] NCCL INFO NET/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-net.so
+ia1:872399:872399 [0] NCCL INFO NET/Plugin: Using internal network plugin.
+[rank0]:[I302 17:00:00.178833905 ProcessGroupNCCL.cpp:2262] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL broadcast unique ID through store took 0.073853 ms
+ia1:872399:872399 [0] NCCL INFO cudaDriverVersion 12040
+NCCL version 2.21.5+cuda12.4
+ia1:872399:877335 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:872399:877335 [0] NCCL INFO NET/IB : No device found.
+ia1:872399:877335 [0] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:872399:877335 [0] NCCL INFO NET/Socket : Using [0]eno1:162.129.223.66<0>
+ia1:872399:877335 [0] NCCL INFO Using non-device net plugin version 0
+ia1:872399:877335 [0] NCCL INFO Using network Socket
+[Text] Textual embeddings shape: (31780, 768)
+Textual Embeddings Extracted!!!
+[Data] Dataset split into Train: 22246, Validation: 4767, Test: 4767
+[Main] Loading best hyperparameters from best_hyperparameters.json...
+[Main] Loaded best hyperparameters: {'lr': 0.0005947012811791727, 'dropout': 0.11378010821029086, 'num_latents': 61, 'latent_dim': 256, 'adv_lambda': 0.35824957883020864}, with val acc: 0.0000
+[Model] Initializing CrossAttentionBlock (d_model=256, n_heads=8)
+[Model] Initializing CrossAttentionBlock (d_model=256, n_heads=8)
+wandb: Using wandb-core as the SDK backend.  Please refer to https://wandb.me/wandb-core for more information.
+wandb: Currently logged in as: angadsandhu (ouroboroos) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.19.7
+wandb: Run data is saved locally in /home/asandhu9/cz-biohub-test/wandb/run-20250302_170029-ikqoe2qr
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run efficient-wildflower-38
+wandb: ⭐️ View project at https://wandb.ai/ouroboroos/cz-biohub-test
+wandb: 🚀 View run at https://wandb.ai/ouroboroos/cz-biohub-test/runs/ikqoe2qr
+[Main] Skipping training. Loading final_model.pt...
+[Main] Loaded final model from output/final_model.pt.
+[rank1]:[I302 17:00:29.932470836 ProcessGroupNCCL.cpp:2262] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL broadcast unique ID through store took 0.251727 ms
+ia1:872400:872400 [1] NCCL INFO cudaDriverVersion 12040
+ia1:872400:872400 [1] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:872400:872400 [1] NCCL INFO Bootstrap : Using eno1:162.129.223.66<0>
+ia1:872400:872400 [1] NCCL INFO NET/Plugin: No plugin found (libnccl-net.so)
+ia1:872400:872400 [1] NCCL INFO NET/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-net.so
+ia1:872400:872400 [1] NCCL INFO NET/Plugin: Using internal network plugin.
+ia1:872400:877560 [1] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:872400:877560 [1] NCCL INFO NET/IB : No device found.
+ia1:872400:877560 [1] NCCL INFO NCCL_SOCKET_IFNAME set by environment to eno1
+ia1:872400:877560 [1] NCCL INFO NET/Socket : Using [0]eno1:162.129.223.66<0>
+ia1:872400:877560 [1] NCCL INFO Using non-device net plugin version 0
+ia1:872400:877560 [1] NCCL INFO Using network Socket
+ia1:872400:877560 [1] NCCL INFO ncclCommInitRank comm 0x5613aa93d360 rank 1 nranks 2 cudaDev 1 nvmlDev 1 busId 20000 commId 0x5db44dfec61635b2 - Init START
+ia1:872399:877335 [0] NCCL INFO ncclCommInitRank comm 0x55bf0c11bbd0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId a000 commId 0x5db44dfec61635b2 - Init START
+ia1:872400:877560 [1] NCCL INFO Setting affinity for GPU 1 to 1f,00000000,0000001f
+ia1:872399:877335 [0] NCCL INFO Setting affinity for GPU 0 to 1f,00000000,0000001f
+ia1:872400:877560 [1] NCCL INFO comm 0x5613aa93d360 rank 1 nRanks 2 nNodes 1 localRanks 2 localRank 1 MNNVL 0
+ia1:872399:877335 [0] NCCL INFO comm 0x55bf0c11bbd0 rank 0 nRanks 2 nNodes 1 localRanks 2 localRank 0 MNNVL 0
+ia1:872399:877335 [0] NCCL INFO Channel 00/02 :    0   1
+ia1:872399:877335 [0] NCCL INFO Channel 01/02 :    0   1
+ia1:872400:877560 [1] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] -1/-1/-1->1->0
+ia1:872399:877335 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1
+ia1:872400:877560 [1] NCCL INFO P2P Chunksize set to 131072
+ia1:872399:877335 [0] NCCL INFO P2P Chunksize set to 131072
+ia1:872400:877560 [1] NCCL INFO Channel 00 : 1[1] -> 0[0] via SHM/direct/direct
+ia1:872400:877560 [1] NCCL INFO Channel 01 : 1[1] -> 0[0] via SHM/direct/direct
+ia1:872399:877335 [0] NCCL INFO Channel 00 : 0[0] -> 1[1] via SHM/direct/direct
+ia1:872399:877335 [0] NCCL INFO Channel 01 : 0[0] -> 1[1] via SHM/direct/direct
+ia1:872399:877335 [0] NCCL INFO Connected all rings
+ia1:872399:877335 [0] NCCL INFO Connected all trees
+ia1:872400:877560 [1] NCCL INFO Connected all rings
+ia1:872400:877560 [1] NCCL INFO Connected all trees
+ia1:872400:877560 [1] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+ia1:872400:877560 [1] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 2 p2p channels per peer
+ia1:872399:877335 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+ia1:872399:877335 [0] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 2 p2p channels per peer
+ia1:872400:877560 [1] NCCL INFO TUNER/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-tuner.so
+ia1:872400:877560 [1] NCCL INFO TUNER/Plugin: Using internal tuner plugin.
+ia1:872400:877560 [1] NCCL INFO ncclCommInitRank comm 0x5613aa93d360 rank 1 nranks 2 cudaDev 1 nvmlDev 1 busId 20000 commId 0x5db44dfec61635b2 - Init COMPLETE
+ia1:872399:877335 [0] NCCL INFO TUNER/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-tuner.so
+ia1:872399:877335 [0] NCCL INFO TUNER/Plugin: Using internal tuner plugin.
+ia1:872399:877335 [0] NCCL INFO ncclCommInitRank comm 0x55bf0c11bbd0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId a000 commId 0x5db44dfec61635b2 - Init COMPLETE
+[rank1]:[I302 17:00:30.172832552 ProcessGroupNCCL.cpp:2301] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL created ncclComm_ 0x5613aa93d360 on CUDA device: 
+[rank1]:[I302 17:00:30.172853003 ProcessGroupNCCL.cpp:2306] [PG ID 0 PG GUID 0(default_pg) Rank 1] NCCL_DEBUG: INFO
+[rank0]:[I302 17:00:30.180886241 ProcessGroupNCCL.cpp:2301] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL created ncclComm_ 0x55bf0c11bbd0 on CUDA device:  
+[rank0]:[I302 17:00:30.180928477 ProcessGroupNCCL.cpp:2306] [PG ID 0 PG GUID 0(default_pg) Rank 0] NCCL_DEBUG: INFO
+[Test] Final Test Donor Loss: 1.3892, Adv Loss: 0.4033, Accuracy: 0.8104
+
+[Sample Predictions]
+[Test] Final Test Donor Loss: 1.5034, Adv Loss: 0.3933, Accuracy: 0.7965
+
+[Sample Predictions]
+Sample 1: Predicted Donor: SD046/16, True Donor: SD046/16
+Sample 2: Predicted Donor: SD036/17, True Donor: SD036/17
+Sample 3: Predicted Donor: SD036/17, True Donor: SD036/17
+Sample 4: Predicted Donor: SD042/18, True Donor: SD042/18
+Sample 5: Predicted Donor: SD030/18, True Donor: SD038/17
+Sample 1: Predicted Donor: SD026/16, True Donor: SD026/16
+Sample 2: Predicted Donor: SD030/18, True Donor: SD030/18
+Sample 3: Predicted Donor: SD030/18, True Donor: SD030/18
+Sample 4: Predicted Donor: SD030/18, True Donor: SD030/18
+Sample 5: Predicted Donor: SD026/16, True Donor: SD026/16
+[Main] Best hyperparameters and final results saved to output/best_hyperparameters.json
+[Main] Best hyperparameters and final results saved to output/best_hyperparameters.json
+[Debug] attn_resampler shape: torch.Size([1, 61, 8])
+Traceback (most recent call last):
+  File "/home/asandhu9/cz-biohub-test/main.py", line 905, in <module>
+    main()
+  File "/home/asandhu9/cz-biohub-test/main.py", line 868, in main
+    raise ValueError(
+ValueError: Unexpected shape for attn_resampler: torch.Size([1, 61, 8]). Expected 4D with batch>=1.
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/home/asandhu9/cz-biohub-test/main.py", line 905, in <module>
+[rank1]:     main()
+[rank1]:   File "/home/asandhu9/cz-biohub-test/main.py", line 868, in main
+[rank1]:     raise ValueError(
+[rank1]: ValueError: Unexpected shape for attn_resampler: torch.Size([1, 61, 8]). Expected 4D with batch>=1.
+[Debug] attn_resampler shape: torch.Size([1, 61, 8])
+Traceback (most recent call last):
+  File "/home/asandhu9/cz-biohub-test/main.py", line 905, in <module>
+    main()
+  File "/home/asandhu9/cz-biohub-test/main.py", line 868, in main
+    raise ValueError(
+ValueError: Unexpected shape for attn_resampler: torch.Size([1, 61, 8]). Expected 4D with batch>=1.
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/asandhu9/cz-biohub-test/main.py", line 905, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/asandhu9/cz-biohub-test/main.py", line 868, in main
+[rank0]:     raise ValueError(
+[rank0]: ValueError: Unexpected shape for attn_resampler: torch.Size([1, 61, 8]). Expected 4D with batch>=1.
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mefficient-wildflower-38[0m at: [34mhttps://wandb.ai/ouroboroos/cz-biohub-test/runs/ikqoe2qr[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20250302_170029-ikqoe2qr/logs[0m
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mglowing-energy-37[0m at: [34mhttps://wandb.ai/ouroboroos/cz-biohub-test/runs/cqhwt7am[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20250302_165959-cqhwt7am/logs[0m
+W0302 17:00:36.179000 872370 .venv/lib/python3.11/site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 872399 closing signal SIGTERM
+E0302 17:00:36.294000 872370 .venv/lib/python3.11/site-packages/torch/distributed/elastic/multiprocessing/api.py:869] failed (exitcode: 1) local_rank: 1 (pid: 872400) of binary: /home/asandhu9/cz-biohub-test/.venv/bin/python
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/accelerate/commands/launch.py", line 1209, in <module>
+    main()
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/accelerate/commands/launch.py", line 1205, in main
+    launch_command(args)
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/accelerate/commands/launch.py", line 1190, in launch_command
+    multi_gpu_launcher(args)
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/accelerate/commands/launch.py", line 808, in multi_gpu_launcher
+    distrib_run.run(args)
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/torch/distributed/run.py", line 910, in run
+    elastic_launch(
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 138, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 269, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+main.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2025-03-02_17:00:36
+  host      : ia1
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 872400)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+[I302 17:00:36.452876592 TCPStoreLibUvBackend.cpp:1128] [c10d] uv_loop_close failed with:-16 errn:EBUSY desc:resource busy or locked
+[I302 17:00:36.452978617 TCPStoreLibUvBackend.cpp:1138] [c10d] uv_loop cleanup finished.
+srun: error: ia1: task 0: Exited with exit code 1
+Job completed on Sun Mar  2 05:00:36 PM EST 2025
+Process Time Elapsed: 0d 0h 5m 4s

@@ -5,10 +5,14 @@ main.py
 Script to train a multimodal model that integrates Geneformer single-cell 
 embeddings (omics modality) and textual embeddings (from cell type labels) 
 to predict donor IDs with adversarial training to control for the sex confounder.
-This version saves the model checkpoint at each epoch (only during the final training loop)
-into a "temp/" directory within the "output/" directory and then selects the checkpoint
-with the highest test accuracy. It also prints out both donor loss and adversarial loss 
-for training, validation, and test sets.
+
+Features:
+- A flag (--search-hparams) to toggle whether we run Optuna hyperparameter search
+  or load best hyperparameters from best_hyperparameters.json.
+- A flag (--train-model) to toggle whether we train the model or simply load
+  the final model and generate outputs (UMAP, cross-attention heatmap, etc.).
+- Fixes to the Perceiver Resampler so that the cross-attention heatmap is meaningful.
+- Additional fix to handle a batch size >= 1 when generating the heatmap.
 """
 
 ##############################################################################
@@ -56,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     Parse command-line arguments for the training script.
     """
     parser = argparse.ArgumentParser(
-        description="Train multimodal model with shared Optuna hyperparameter search using Accelerate and DeepSpeed"
+        description="Train multimodal model with optional hyperparameter search and optional training."
     )
     parser.add_argument("--census-version", type=str, default="2023-12-15",
                         help="CELLxGENE census version to use.")
@@ -77,6 +81,11 @@ def parse_args() -> argparse.Namespace:
                         help="Random seed for reproducibility.")
     parser.add_argument("--use-wandb", action="store_true",
                         help="Enable logging to Weights & Biases.")
+    # New flags
+    parser.add_argument("--search-hparams", action="store_true",
+                        help="Enable searching for hyperparameters with Optuna.")
+    parser.add_argument("--train-model", action="store_true",
+                        help="Enable training the model. If false, loads final_model.pt for evaluation.")
     return parser.parse_args()
 
 ##############################################################################
@@ -184,6 +193,7 @@ class CrossAttentionBlock(nn.Module):
 class PerceiverResampler(nn.Module):
     """
     Module that projects fused features into latent space via cross-attention.
+    Expects a 3D input: [batch, seq_len, input_dim].
     """
     def __init__(self, input_dim: int, num_latents: int, latent_dim: int, n_heads: int,
                  dropout: float = 0.1, batch_first: bool = True) -> None:
@@ -191,15 +201,33 @@ class PerceiverResampler(nn.Module):
         self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
         self.cross_attn = CrossAttentionBlock(d_model=latent_dim, n_heads=n_heads,
                                               dropout=dropout, batch_first=batch_first)
-        self.input_proj = nn.Linear(input_dim, latent_dim) if input_dim != latent_dim else nn.Identity()
+        # Project input into latent_dim if needed
+        if input_dim != latent_dim:
+            self.input_proj = nn.Linear(input_dim, latent_dim)
+        else:
+            self.input_proj = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x_proj = self.input_proj(x)
-        batch = x.size(0)
-        latents_expanded = self.latents.unsqueeze(0).expand(batch, -1, -1)  # (batch, num_latents, latent_dim)
-        x_proj_unsq = x_proj.unsqueeze(1)  # (batch, 1, latent_dim)
-        out, attn_weights = self.cross_attn(latents_expanded, x_proj_unsq, x_proj_unsq)
-        out = out.mean(dim=1)  # Aggregate across latents
+        """
+        x: [batch, seq_len, input_dim]
+        Returns:
+          out: [batch, latent_dim]
+          attn_weights: [batch, n_heads, num_latents, seq_len]
+        """
+        x_proj = self.input_proj(x)  # [batch, seq_len, latent_dim]
+        batch_size, seq_len, _ = x_proj.shape
+
+        # Expand the learned latents to match the batch dimension
+        latents_expanded = self.latents.unsqueeze(0).expand(batch_size, -1, -1)
+        # latents_expanded: [batch, num_latents, latent_dim]
+
+        # Cross-attention: latents as query, x_proj as key & value
+        out, attn_weights = self.cross_attn(latents_expanded, x_proj, x_proj)
+        # out shape: [batch, num_latents, latent_dim]
+        # attn_weights shape: [batch, n_heads, num_latents, seq_len]
+
+        # Average across the latents dimension
+        out = out.mean(dim=1)  # [batch, latent_dim]
         return out, attn_weights
 
 ##############################################################################
@@ -219,8 +247,8 @@ class MultiModalModel(nn.Module):
                  num_donors: int = 10) -> None:
         super(MultiModalModel, self).__init__()
         self.num_tokens = num_tokens
-        self.omics_token_dim = omics_dim // num_tokens  # e.g., 64
-        self.text_token_dim = text_dim // num_tokens    # e.g., 96
+        self.omics_token_dim = omics_dim // num_tokens  # e.g., 64 if omics_dim=512 and num_tokens=8
+        self.text_token_dim = text_dim // num_tokens    # e.g., 96 if text_dim=768 and num_tokens=8
 
         # Project tokens into a common fusion space
         self.omics_token_proj = nn.Linear(self.omics_token_dim, fusion_dim)
@@ -276,27 +304,35 @@ class MultiModalModel(nn.Module):
         self.adv_lambda = adv_lambda
 
     def forward(self, omics: torch.Tensor, text: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        batch = omics.size(0)
+        """
+        omics: [batch, omics_dim]
+        text:  [batch, text_dim]
+        """
+        batch_size = omics.size(0)
+
         # Reshape omics and text into tokens
-        omics_tokens = omics.view(batch, self.num_tokens, self.omics_token_dim)
-        text_tokens = text.view(batch, self.num_tokens, self.text_token_dim)
+        omics_tokens = omics.view(batch_size, self.num_tokens, self.omics_token_dim)   # [B, 8, 64]
+        text_tokens = text.view(batch_size, self.num_tokens, self.text_token_dim)      # [B, 8, 96]
 
         # Project tokens into the fusion space
-        omics_tokens = self.omics_token_proj(omics_tokens)  # (batch, num_tokens, fusion_dim)
-        text_tokens = self.text_token_proj(text_tokens)     # (batch, num_tokens, fusion_dim)
+        omics_tokens = self.omics_token_proj(omics_tokens)  # [B, 8, fusion_dim]
+        text_tokens = self.text_token_proj(text_tokens)     # [B, 8, fusion_dim]
 
-        # Cross-attention: omics tokens query text tokens
+        # Cross-attention: omics tokens (query) -> text tokens (key/value)
         fused_tokens, attn_weights = self.cross_attn(omics_tokens, text_tokens, text_tokens)
         fused_tokens = self.ffn(fused_tokens)
         # Transformer encoder for additional refinement
         fused_tokens = self.transformer_encoder(fused_tokens)
-        # Aggregate features by averaging across tokens
-        fused_feat = fused_tokens.mean(dim=1)
-        # Perceiver Resampler to obtain latent representation
-        latent, attn_resampler = self.resampler(fused_feat)
+        # fused_tokens shape: [batch, 8, fusion_dim]
+
+        # Pass the entire fused token sequence into PerceiverResampler
+        latent, attn_resampler = self.resampler(fused_tokens)
+        # latent: [batch, latent_dim]
+        # attn_resampler: [batch, n_heads, num_latents, seq_len=8]
 
         # Donor classification branch
         donor_logits = self.classifier(latent)
+
         # Adversarial branch with gradient reversal
         adv_input = grad_reverse(latent, self.adv_lambda)
         sex_logits = self.adv_classifier(adv_input)
@@ -343,14 +379,18 @@ def evaluate_model_full(model: nn.Module, dataloader: DataLoader, accelerator: A
             text = text.to(accelerator.device)
             donor_labels = donor_labels.to(accelerator.device)
             sex_labels = sex_labels.to(accelerator.device)
+
             donor_logits, sex_logits, _, _ = model(omics, text)
             loss_donor = donor_criterion(donor_logits, donor_labels)
             loss_adv = adv_criterion(sex_logits, sex_labels)
+
             running_donor_loss += loss_donor.item() * omics.size(0)
             running_adv_loss += loss_adv.item() * omics.size(0)
+
             _, predicted = torch.max(donor_logits, 1)
             total += donor_labels.size(0)
             correct += (predicted == donor_labels).sum().item()
+
     avg_donor_loss = running_donor_loss / total
     avg_adv_loss = running_adv_loss / total
     accuracy = correct / total
@@ -432,6 +472,7 @@ def train_model(model: nn.Module,
             val_d_loss = 0.0
             val_a_loss = 0.0
             epoch_val_acc = 0.0
+
         # Evaluate on test set
         if test_loader is not None:
             test_d_loss, test_a_loss, epoch_test_acc = evaluate_model_full(model, test_loader, accelerator)
@@ -596,14 +637,13 @@ def main() -> None:
       4. Extract textual embeddings.
       5. Build label mappings and create dataset.
       6. Split the dataset into training, validation, and test sets.
-      7. Perform hyperparameter optimization with Optuna.
-      8. Train the final model on the training set (with epoch-level evaluation, checkpointing, and early stopping).
-      9. Evaluate the final (best) model on the test set.
-     10. Print sample predictions from the test set.
-     11. Plot training curves and visualize cross-attention.
-     12. Save final results and model checkpoint.
+      7. Depending on --search-hparams, either run Optuna or load best hyperparams.
+      8. Depending on --train-model, either train the model or load final_model.pt.
+      9. Evaluate the final (best) model on the test set, generate sample predictions,
+         produce cross-attention heatmap, and save final results.
     """
-    global textual_embeddings, accelerator, omics_data, train_dataloader, val_dataloader, test_dataloader, donor_map
+    global textual_embeddings, accelerator, omics_data
+    global train_dataloader, val_dataloader, test_dataloader, donor_map
 
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -654,30 +694,37 @@ def main() -> None:
     # Prepare dataloaders with Accelerator (prepare all splits)
     train_dataloader, val_dataloader, test_dataloader = accelerator.prepare(train_dataloader, val_dataloader, test_dataloader)
 
-    # 7. Hyperparameter Optimization using shared Optuna storage on training/validation splits
+    # 7. Hyperparameter search or load best hyperparameters
     storage_name = "sqlite:///optuna_study.db"
-    study = optuna.create_study(direction="minimize",
-                                storage=storage_name,
-                                study_name="multimodal_study",
-                                load_if_exists=True)
-    study.optimize(objective, n_trials=10)
-    accelerator.wait_for_everyone()  # Wait for all processes to complete
-    best_params = study.best_params
-    current_best_acc = -study.best_value
-    print(f"[Optuna] Best hyperparameters from Optuna: {best_params} with validation accuracy {current_best_acc:.4f}")
+    study_name = "multimodal_study"
+    if args.search_hparams:
+        print("[Main] Running Optuna hyperparameter search...")
+        study = optuna.create_study(direction="minimize",
+                                    storage=storage_name,
+                                    study_name=study_name,
+                                    load_if_exists=True)
+        study.optimize(objective, n_trials=10)
+        accelerator.wait_for_everyone()
+        best_params = study.best_params
+        current_best_acc = -study.best_value
+        # Save best hyperparameters to disk
+        best_hp_path = os.path.join(args.output_dir, "best_hyperparameters.json")
+        final_hp_results = {"best_params": best_params, "final_validation_accuracy": current_best_acc}
+        with open(best_hp_path, "w") as f:
+            json.dump(final_hp_results, f, indent=4)
+        print(f"[Main] Best hyperparameters saved to {best_hp_path}")
+        print(f"[Optuna] Best hyperparameters from Optuna: {best_params} with validation accuracy {current_best_acc:.4f}")
+    else:
+        print("[Main] Loading best hyperparameters from best_hyperparameters.json...")
+        best_hp_path = os.path.join(args.output_dir, "best_hyperparameters.json")
+        with open(best_hp_path, "r") as f:
+            loaded_hp = json.load(f)
+        best_params = loaded_hp["best_params"]
+        current_best_acc = loaded_hp.get("final_validation_accuracy", 0.0)
+        if not current_best_acc: current_best_acc = 0.0000000
+        print(f"[Main] Loaded best hyperparameters: {best_params}, with val acc: {current_best_acc:.4f}")
 
-    # Save best hyperparameters to disk
-    best_hp_path = os.path.join(args.output_dir, "best_hyperparameters.json")
-    final_hp_results = {"best_params": best_params, "final_validation_accuracy": current_best_acc}
-    with open(best_hp_path, "w") as f:
-        json.dump(final_hp_results, f, indent=4)
-    print(f"[Main] Best hyperparameters saved to {best_hp_path}")
-
-    # 8. Initialize wandb logging if enabled
-    if args.use_wandb:
-        wandb.init(project="cz-biohub-test", config=best_params, reinit=True)
-
-    # 9. Build the final model with the best hyperparameters
+    # 8. Train final model (if --train-model) or load final_model.pt
     num_donors = len(donor_map)
     model = MultiModalModel(
         omics_dim=omics_data.shape[1],
@@ -692,56 +739,114 @@ def main() -> None:
         num_donors=num_donors
     )
 
-    optimizer = optim.Adam(model.parameters(), lr=best_params["lr"], weight_decay=1e-4)
-    total_steps = len(train_dataloader) * args.num_epochs
-    warmup_steps = int(0.1 * total_steps)
-    scheduler = get_cosine_schedule_with_warmup(optimizer,
-                                                num_warmup_steps=warmup_steps,
-                                                num_training_steps=total_steps)
+    if args.use_wandb:
+        wandb.init(project="cz-biohub-test", config=best_params, reinit=True)
 
-    # Prepare model, optimizer, and training dataloader with Accelerator
-    model, optimizer, train_dataloader, scheduler = accelerator.prepare(model,
-                                                                        optimizer,
-                                                                        train_dataloader,
-                                                                        scheduler)
+    if args.train_model:
+        print("[Main] Training the model with best hyperparameters...")
+        optimizer = optim.Adam(model.parameters(), lr=best_params["lr"], weight_decay=1e-4)
+        total_steps = len(train_dataloader) * args.num_epochs
+        warmup_steps = int(0.1 * total_steps)
+        scheduler = get_cosine_schedule_with_warmup(optimizer,
+                                                    num_warmup_steps=warmup_steps,
+                                                    num_training_steps=total_steps)
 
-    # Create a temporary directory for saving checkpoints during training
-    temp_dir = os.path.join(args.output_dir, "temp")
-    os.makedirs(temp_dir, exist_ok=True)
+        # Prepare model, optimizer, and training dataloader with Accelerator
+        model, optimizer, train_dataloader, scheduler = accelerator.prepare(model,
+                                                                            optimizer,
+                                                                            train_dataloader,
+                                                                            scheduler)
 
-    # 10. Train the model using the training set (with evaluation on val and test sets and checkpointing)
-    train_accs, val_accs, test_accs, epochs_trained = train_model(
-        model,
-        train_dataloader,
-        optimizer,
-        scheduler,
-        num_epochs=args.num_epochs,
-        accelerator=accelerator,
-        output_dir=temp_dir,
-        log_to_wandb=args.use_wandb,
-        val_loader=val_dataloader,
-        test_loader=test_dataloader,
-        early_stopping_patience=3,
-        save_checkpoints=True
-    )
+        # Create a temporary directory for saving checkpoints during training
+        temp_dir = os.path.join(args.output_dir, "temp")
+        os.makedirs(temp_dir, exist_ok=True)
 
-    # 11. Plot and save training curves (Train, Validation, and Test Accuracy)
-    training_curves_path = os.path.join(args.output_dir, "training_curves.png")
-    plt.figure(figsize=(12, 6))
-    plt.plot(epochs_trained, train_accs, label="Train Accuracy")
-    plt.plot(epochs_trained, val_accs, label="Validation Accuracy")
-    plt.plot(epochs_trained, test_accs, label="Test Accuracy")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.title("Accuracy Curves")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(training_curves_path)
-    plt.close()
-    print(f"[Main] Training curves saved to {training_curves_path}")
+        # Train the model
+        train_accs, val_accs, test_accs, epochs_trained = train_model(
+            model,
+            train_dataloader,
+            optimizer,
+            scheduler,
+            num_epochs=args.num_epochs,
+            accelerator=accelerator,
+            output_dir=temp_dir,
+            log_to_wandb=args.use_wandb,
+            val_loader=val_dataloader,
+            test_loader=test_dataloader,
+            early_stopping_patience=3,
+            save_checkpoints=True
+        )
 
-    # 12. Visualize Perceiver Resampler cross-attention for a single sample
+        # Plot and save training curves
+        training_curves_path = os.path.join(args.output_dir, "training_curves.png")
+        plt.figure(figsize=(12, 6))
+        plt.plot(epochs_trained, train_accs, label="Train Accuracy")
+        plt.plot(epochs_trained, val_accs, label="Validation Accuracy")
+        plt.plot(epochs_trained, test_accs, label="Test Accuracy")
+        plt.xlabel("Epoch")
+        plt.ylabel("Accuracy")
+        plt.title("Accuracy Curves")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(training_curves_path)
+        plt.close()
+        print(f"[Main] Training curves saved to {training_curves_path}")
+
+        # Load the best model from training
+        best_model_path = os.path.join(temp_dir, "best_model.pt")
+        best_model_state = torch.load(best_model_path, map_location=accelerator.device)
+        accelerator.unwrap_model(model).load_state_dict(best_model_state)
+        print(f"[Main] Loaded best model from {best_model_path} for final evaluation.")
+    else:
+        print("[Main] Skipping training. Loading final_model.pt...")
+        # Move model to accelerator device
+        model = model.to(accelerator.device)
+        # Load final_model directly
+        final_model_path = os.path.join(args.output_dir, "final_model.pt")
+        if not os.path.isfile(final_model_path):
+            raise FileNotFoundError(f"final_model.pt not found in {args.output_dir}. "
+                                    "Please run with --train-model at least once.")
+        model_state = torch.load(final_model_path, map_location=accelerator.device)
+        model.load_state_dict(model_state)
+        print(f"[Main] Loaded final model from {final_model_path}.")
+
+    # 9. Evaluate the final (best) model on the test set
     model.eval()
+    model = accelerator.prepare(model)  # Ensure model is prepared for distributed
+
+    final_test_donor_loss, final_test_adv_loss, final_test_acc = evaluate_model_full(model, test_dataloader, accelerator)
+    print(f"[Test] Final Test Donor Loss: {final_test_donor_loss:.4f}, Adv Loss: {final_test_adv_loss:.4f}, Accuracy: {final_test_acc:.4f}")
+
+    # Print sample predictions
+    donor_inv_map = {v: k for k, v in donor_map.items()}
+    sample_predictions(model, test_dataloader, accelerator, donor_inv_map, num_samples=5)
+
+    # Save final results to best_hyperparameters.json
+    best_hp_path = os.path.join(args.output_dir, "best_hyperparameters.json")
+    if os.path.isfile(best_hp_path):
+        with open(best_hp_path, "r") as f:
+            final_results = json.load(f)
+    else:
+        final_results = {}
+
+    final_results.update({
+        "best_params": best_params,
+        "final_train_accuracy": None,  # We can store last train acc if needed
+        "final_validation_accuracy": None,  # We can store last val acc if needed
+        "final_test_accuracy": final_test_acc,
+        "final_test_donor_loss": final_test_donor_loss,
+        "final_test_adv_loss": final_test_adv_loss
+    })
+
+    with open(best_hp_path, "w") as f:
+        json.dump(final_results, f, indent=4)
+    print(f"[Main] Best hyperparameters and final results saved to {best_hp_path}")
+
+    # Save final model checkpoint if we trained
+    if args.train_model:
+        save_model(model, args.output_dir, accelerator)
+
+    # Generate a cross-attention heatmap from a single sample in the test set
     single_loader = DataLoader(test_dataset, batch_size=1, shuffle=True)
     single_loader = accelerator.prepare(single_loader)
     sample_omics, sample_text, _, _ = next(iter(single_loader))
@@ -750,76 +855,56 @@ def main() -> None:
 
     with torch.no_grad():
         _, _, _, attn_resampler = model(sample_omics, sample_text)
+        # Debug print to see the actual shape
+        print(f"[Debug] attn_resampler shape: {attn_resampler.shape}")
 
-    # Process attention tensor: remove batch dimension and average across heads if necessary
-    if attn_resampler.dim() == 4:
-        attn_resampler = attn_resampler.squeeze(0)  # shape: (num_heads, query_len, key_len)
-        avg_attn = attn_resampler.mean(dim=0).detach().cpu().numpy()
-    elif attn_resampler.dim() == 3:
-        avg_attn = attn_resampler.squeeze(0).detach().cpu().numpy()
-    else:
-        raise ValueError("Unexpected shape for attn_resampler")
+        # If it's 4D, typical shape is [batch, n_heads, num_latents, seq_len].
+        # If it's 3D, shape might be [batch, query_len, key_len] or [batch, combined, seq_len].
+        if attn_resampler.dim() == 4:
+            # Example shape: [1, n_heads, num_latents, seq_len]
+            attn_resampler = attn_resampler[0]  # shape: [n_heads, num_latents, seq_len]
+            avg_attn = attn_resampler.mean(dim=0).detach().cpu().numpy()  # shape: [num_latents, seq_len]
+        elif attn_resampler.dim() == 3:
+            # Example shape: [1, something, something].
+            # We'll remove the batch dim and assume the result is [X, Y].
+            # This produces a 2D matrix for the heatmap:
+            attn_resampler = attn_resampler[0]  # shape now [something, something]
+            avg_attn = attn_resampler.detach().cpu().numpy()
+            # Optionally, you can check if the user wants to average along one dimension.
+            # But at minimum, we can visualize the 2D matrix directly.
+        else:
+            raise ValueError(
+                f"Unexpected shape for attn_resampler: {attn_resampler.shape}. "
+                "Expected either 3D or 4D."
+            )
 
     cross_attn_path = os.path.join(args.output_dir, "perceiver_attention_heatmap.png")
-    plt.figure(figsize=(6, 4))
+    plt.figure(figsize=(6, 5))
     plt.imshow(avg_attn, cmap="viridis", aspect="auto")
     plt.colorbar()
     plt.title("Average Perceiver Cross-Attention Weights (Single Sample)")
-    plt.xlabel("Key Token")
-    plt.ylabel("Query Token")
+    plt.xlabel("Key/Token Axis")
+    plt.ylabel("Query/Latent Axis")
     plt.savefig(cross_attn_path)
     plt.close()
     print(f"[Main] Perceiver cross-attention heatmap saved to {cross_attn_path}")
-
-    # 13. Load the best model (saved during training) for final evaluation.
-    best_model_path = os.path.join(temp_dir, "best_model.pt")
-    best_model_state = torch.load(best_model_path, map_location=accelerator.device)
-    # Load the state_dict into the raw model (unwrapped) to avoid key mismatches
-    accelerator.unwrap_model(model).load_state_dict(best_model_state)
-    print(f"[Main] Loaded best model from {best_model_path} for final evaluation.")
-
-    # 14. Evaluate the final model on the test set
-    final_test_donor_loss, final_test_adv_loss, final_test_acc = evaluate_model_full(model, test_dataloader, accelerator)
-    print(f"[Test] Final Test Donor Loss: {final_test_donor_loss:.4f}, Adv Loss: {final_test_adv_loss:.4f}, Accuracy: {final_test_acc:.4f}")
-
-    # 15. Print sample predictions from the test set.
-    donor_inv_map = {v: k for k, v in donor_map.items()}
-    sample_predictions(model, test_dataloader, accelerator, donor_inv_map, num_samples=5)
-
-    # 16. Save final results (best hyperparameters and final accuracies)
-    final_results = {"best_params": best_params,
-                     "final_train_accuracy": train_accs[-1],
-                     "final_validation_accuracy": val_accs[-1],
-                     "final_test_accuracy": final_test_acc,
-                     "final_test_donor_loss": final_test_donor_loss,
-                     "final_test_adv_loss": final_test_adv_loss}
-    with open(best_hp_path, "w") as f:
-        json.dump(final_results, f, indent=4)
-    print(f"[Main] Best hyperparameters and final results saved to {best_hp_path}")
-
-    # 17. Save model checkpoint (final model)
-    save_model(model, args.output_dir, accelerator)
-
-    # 18. Finalize wandb logging if enabled
+    
+    # Finish wandb if used
     if args.use_wandb:
         wandb.log({
-            "final_train_accuracy": train_accs[-1],
-            "final_validation_accuracy": val_accs[-1],
             "final_test_accuracy": final_test_acc,
             "final_test_donor_loss": final_test_donor_loss,
             "final_test_adv_loss": final_test_adv_loss,
         })
         wandb.finish()
 
-    # 19. Print final summary of results
+    # Print final summary
     print("\n[Main] Final Results Summary:")
     print(f" - Number of cells loaded: {adata.n_obs}")
     print(f" - UMAP plot saved at: {umap_path}")
-    print(f" - Training curves saved at: {training_curves_path}")
+    print(f" - Training curves saved at: {os.path.join(args.output_dir, 'training_curves.png')}")
     print(f" - Perceiver cross-attention heatmap saved at: {cross_attn_path}")
     print(f" - Best hyperparameters and final results saved at: {best_hp_path}")
-    print(f" - Final Train Accuracy: {train_accs[-1]:.4f}")
-    print(f" - Final Validation Accuracy: {val_accs[-1]:.4f}")
     print(f" - Final Test Accuracy: {final_test_acc:.4f}")
     print(f" - Final Test Donor Loss: {final_test_donor_loss:.4f}")
     print(f" - Final Test Adv Loss: {final_test_adv_loss:.4f}")

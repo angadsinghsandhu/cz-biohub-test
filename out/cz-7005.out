@@ -1,0 +1,101 @@
+
+conda 24.3.0
+
+========================================
+Power outage scheduled on Mar 18 and 19.
+========================================
+
+==== Job Debug Info ====
+NUM_MACHINES=1
+NUM_PROCESSES=2
+MACHINE_RANK=0
+GPU_IDS=0,1
+OMP_NUM_THREADS=10
+MAIN_IP=ia1
+========================
+Port 29550 is available.
+Selected port: 29550
+Job started on Sun Mar  2 04:46:05 PM EST 2025
+/var/lib/slurm/slurmd/job07005/slurm_script: line 88: --search-hparams --train-model: command not found
+The following values were not passed to `accelerate launch` and had defaults used instead:
+		More than one GPU was found, enabling multi-GPU training.
+		If this was unintended please pass in `--num_processes=1`.
+	`--mixed_precision` was set to a value of `'no'`
+	`--dynamo_backend` was set to a value of `'no'`
+To avoid this warning pass in values for each of the problematic parameters or run `accelerate config`.
+[I302 16:46:07.475348366 socket.cpp:938] [c10d] The client socket has connected to [localhost]:29550 on SocketImpl(fd=21, addr=[localhost]:48832, remote=[localhost]:29550).
+[I302 16:46:13.396552518 socket.cpp:938] [c10d] The client socket has connected to [localhost]:29550 on SocketImpl(fd=21, addr=[localhost]:49214, remote=[localhost]:29550).
+[W302 16:46:13.397166434 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[I302 16:46:13.397222558 ProcessGroupNCCL.cpp:905] [PG ID 0 PG GUID 0 Rank 1] ProcessGroupNCCL initialization options: size: 2, global rank: 1, TIMEOUT(ms): 600000, USE_HIGH_PRIORITY_STREAM: 0, SPLIT_FROM: 0, SPLIT_COLOR: 0, PG Name: 0
+[I302 16:46:13.397229234 ProcessGroupNCCL.cpp:914] [PG ID 0 PG GUID 0 Rank 1] ProcessGroupNCCL environments: NCCL version: 2.21.5, TORCH_NCCL_ASYNC_ERROR_HANDLING: 1, TORCH_NCCL_DUMP_ON_TIMEOUT: 0, TORCH_NCCL_WAIT_TIMEOUT_DUMP_MILSEC: 60000, TORCH_NCCL_DESYNC_DEBUG: 0, TORCH_NCCL_ENABLE_TIMING: 0, TORCH_NCCL_BLOCKING_WAIT: 0, TORCH_DISTRIBUTED_DEBUG: OFF, TORCH_NCCL_USE_TENSOR_REGISTER_ALLOCATOR_HOOK: 0, TORCH_NCCL_ENABLE_MONITORING: 1, TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 480, TORCH_NCCL_TRACE_BUFFER_SIZE: 0, TORCH_NCCL_COORD_CHECK_MILSEC: 1000, TORCH_NCCL_NAN_CHECK: 0, TORCH_NCCL_CUDA_EVENT_CACHE: 0, TORCH_NCCL_LOG_CPP_STACK_ON_UNCLEAN_SHUTDOWN: 1
+[I302 16:46:13.397027562 socket.cpp:938] [c10d] The client socket has connected to [localhost]:29550 on SocketImpl(fd=21, addr=[localhost]:49230, remote=[localhost]:29550).
+[W302 16:46:13.397629860 CUDAAllocatorConfig.h:28] Warning: expandable_segments not supported on this platform (function operator())
+[I302 16:46:13.397690600 ProcessGroupNCCL.cpp:905] [PG ID 0 PG GUID 0 Rank 0] ProcessGroupNCCL initialization options: size: 2, global rank: 0, TIMEOUT(ms): 600000, USE_HIGH_PRIORITY_STREAM: 0, SPLIT_FROM: 0, SPLIT_COLOR: 0, PG Name: 0
+[I302 16:46:13.397697916 ProcessGroupNCCL.cpp:914] [PG ID 0 PG GUID 0 Rank 0] ProcessGroupNCCL environments: NCCL version: 2.21.5, TORCH_NCCL_ASYNC_ERROR_HANDLING: 1, TORCH_NCCL_DUMP_ON_TIMEOUT: 0, TORCH_NCCL_WAIT_TIMEOUT_DUMP_MILSEC: 60000, TORCH_NCCL_DESYNC_DEBUG: 0, TORCH_NCCL_ENABLE_TIMING: 0, TORCH_NCCL_BLOCKING_WAIT: 0, TORCH_DISTRIBUTED_DEBUG: OFF, TORCH_NCCL_USE_TENSOR_REGISTER_ALLOCATOR_HOOK: 0, TORCH_NCCL_ENABLE_MONITORING: 1, TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 480, TORCH_NCCL_TRACE_BUFFER_SIZE: 0, TORCH_NCCL_COORD_CHECK_MILSEC: 1000, TORCH_NCCL_NAN_CHECK: 0, TORCH_NCCL_CUDA_EVENT_CACHE: 0, TORCH_NCCL_LOG_CPP_STACK_ON_UNCLEAN_SHUTDOWN: 1
+[Main] Accelerator initialized on device: cuda:0
+[Main] Accelerator initialized on device: cuda:1
+[Data] Loaded 31780 cells.
+[Data] Loaded 31780 cells.
+[Data] UMAP plot saved to output/umap_geneformer.png
+Extracting Textual Embeddings...
+[Data] UMAP plot saved to output/umap_geneformer.png
+Extracting Textual Embeddings...
+[Text] Textual embeddings shape: (31780, 768)
+Textual Embeddings Extracted!!!
+[Data] Dataset split into Train: 22246, Validation: 4767, Test: 4767
+[Main] Loading best hyperparameters from best_hyperparameters.json...
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/asandhu9/cz-biohub-test/main.py", line 905, in <module>
+[rank0]:     main()
+[rank0]:   File "/home/asandhu9/cz-biohub-test/main.py", line 725, in main
+[rank0]:     print(f"[Main] Loaded best hyperparameters: {best_params}, with val acc: {current_best_acc:.4f}")
+[rank0]:           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]: ValueError: Unknown format code 'f' for object of type 'str'
+[rank0]:[I302 16:50:19.147325001 ProcessGroupNCCL.cpp:1246] [PG ID 0 PG GUID 0 Rank 0] ProcessGroupNCCL destructor entered.
+[rank0]:[W302 16:50:19.147371314 ProcessGroupNCCL.cpp:1250] Warning: WARNING: process group has NOT been destroyed before we destruct ProcessGroupNCCL. On normal program exit, the application should call destroy_process_group to ensure that any pending NCCL operations have finished in this process. In rare cases this process can exit before this point and block the progress of another member of the process group. This constraint has always been present,  but this warning has only been added since PyTorch 2.4 (function operator())
+[rank0]:[I302 16:50:19.147399409 ProcessGroupNCCL.cpp:1230] [PG ID 0 PG GUID 0 Rank 0] Launching ProcessGroupNCCL abort asynchrounously.
+[rank0]:[I302 16:50:19.147722747 ProcessGroupNCCL.cpp:1116] [PG ID 0 PG GUID 0 Rank 0] future is successfully executed for: ProcessGroup abort
+[rank0]:[I302 16:50:19.147729303 ProcessGroupNCCL.cpp:1237] [PG ID 0 PG GUID 0 Rank 0] ProcessGroupNCCL aborts successfully.
+[rank0]:[I302 16:50:19.147787499 ProcessGroupNCCL.cpp:1267] [PG ID 0 PG GUID 0 Rank 0] ProcessGroupNCCL watchdog thread joined.
+[rank0]:[I302 16:50:19.147817277 ProcessGroupNCCL.cpp:1271] [PG ID 0 PG GUID 0 Rank 0] ProcessGroupNCCL heart beat monitor thread joined.
+W0302 16:50:20.563000 862638 .venv/lib/python3.11/site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 862673 closing signal SIGTERM
+E0302 16:50:20.884000 862638 .venv/lib/python3.11/site-packages/torch/distributed/elastic/multiprocessing/api.py:869] failed (exitcode: 1) local_rank: 0 (pid: 862672) of binary: /home/asandhu9/cz-biohub-test/.venv/bin/python
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/accelerate/commands/launch.py", line 1209, in <module>
+    main()
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/accelerate/commands/launch.py", line 1205, in main
+    launch_command(args)
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/accelerate/commands/launch.py", line 1190, in launch_command
+    multi_gpu_launcher(args)
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/accelerate/commands/launch.py", line 808, in multi_gpu_launcher
+    distrib_run.run(args)
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/torch/distributed/run.py", line 910, in run
+    elastic_launch(
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 138, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/asandhu9/cz-biohub-test/.venv/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 269, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+main.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2025-03-02_16:50:20
+  host      : ia1
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 862672)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+[I302 16:50:20.036429749 TCPStoreLibUvBackend.cpp:1128] [c10d] uv_loop_close failed with:-16 errn:EBUSY desc:resource busy or locked
+[I302 16:50:20.036528632 TCPStoreLibUvBackend.cpp:1138] [c10d] uv_loop cleanup finished.
+srun: error: ia1: task 0: Exited with exit code 1
+Job completed on Sun Mar  2 04:50:21 PM EST 2025
+Process Time Elapsed: 0d 0h 4m 16s
