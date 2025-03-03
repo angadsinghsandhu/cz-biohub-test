@@ -1,0 +1,14 @@
+{
+    "best_params": {
+        "lr": 0.0005947012811791727,
+        "dropout": 0.11378010821029086,
+        "num_latents": 61,
+        "latent_dim": 256,
+        "adv_lambda": 0.35824957883020864
+    },
+    "final_train_accuracy": null,
+    "final_validation_accuracy": null,
+    "final_test_accuracy": 0.803453947368421,
+    "final_test_donor_loss": 1.3991587036534359,
+    "final_test_adv_loss": 0.42422453941483246
+}

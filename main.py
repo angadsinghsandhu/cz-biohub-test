@@ -5,14 +5,15 @@ main.py
 Script to train a multimodal model that integrates Geneformer single-cell 
 embeddings (omics modality) and textual embeddings (from cell type labels) 
 to predict donor IDs with adversarial training to control for the sex confounder.
-
+Additionally, this script includes:
+  - A pretraining phase for the Perceiver Resampler using a contrastive objective.
+  - An ablation option to disable the textual modality (cell type label information) 
+    to assess its impact on model performance.
+  
 Features:
-- A flag (--search-hparams) to toggle whether we run Optuna hyperparameter search
-  or load best hyperparameters from best_hyperparameters.json.
-- A flag (--train-model) to toggle whether we train the model or simply load
-  the final model and generate outputs (UMAP, cross-attention heatmap, etc.).
-- Fixes to the Perceiver Resampler so that the cross-attention heatmap is meaningful.
-- Additional fix to handle a batch size >= 1 when generating the heatmap.
+- Flags to toggle hyperparameter search, model training, pretraining, and text modality.
+- Modular training components for efficient parallel processing.
+- Detailed logging and final analysis summary.
 """
 
 ##############################################################################
@@ -52,6 +53,9 @@ val_dataloader: DataLoader = None
 test_dataloader: DataLoader = None
 donor_map: dict = None
 
+# Global flag for pretraining (set in main)
+USE_PRETRAIN = False
+
 ##############################################################################
 #                           Argument Parsing
 ##############################################################################
@@ -60,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     Parse command-line arguments for the training script.
     """
     parser = argparse.ArgumentParser(
-        description="Train multimodal model with optional hyperparameter search and optional training."
+        description="Train multimodal model with optional hyperparameter search, pretraining, and modality ablation."
     )
     parser.add_argument("--census-version", type=str, default="2023-12-15",
                         help="CELLxGENE census version to use.")
@@ -86,6 +90,10 @@ def parse_args() -> argparse.Namespace:
                         help="Enable searching for hyperparameters with Optuna.")
     parser.add_argument("--train-model", action="store_true",
                         help="Enable training the model. If false, loads final_model.pt for evaluation.")
+    parser.add_argument("--pretrain-resampler", action="store_true",
+                        help="Enable contrastive pretraining for the Perceiver Resampler modules.")
+    parser.add_argument("--disable-text-modality", action="store_true",
+                        help="Disable using textual (cell type) information; use only omics data.")
     return parser.parse_args()
 
 ##############################################################################
@@ -219,13 +227,8 @@ class PerceiverResampler(nn.Module):
 
         # Expand the learned latents to match the batch dimension
         latents_expanded = self.latents.unsqueeze(0).expand(batch_size, -1, -1)
-        # latents_expanded: [batch, num_latents, latent_dim]
-
         # Cross-attention: latents as query, x_proj as key & value
         out, attn_weights = self.cross_attn(latents_expanded, x_proj, x_proj)
-        # out shape: [batch, num_latents, latent_dim]
-        # attn_weights shape: [batch, n_heads, num_latents, seq_len]
-
         # Average across the latents dimension
         out = out.mean(dim=1)  # [batch, latent_dim]
         return out, attn_weights
@@ -236,41 +239,41 @@ class PerceiverResampler(nn.Module):
 class MultiModalModel(nn.Module):
     """
     Multimodal model integrating omics and textual embeddings with:
-      - Cross-attention between omics tokens (query) and text tokens (key/value)
-      - Transformer encoder for fused tokens
+      - Cross-attention between omics tokens and text tokens (if text is enabled)
+      - Transformer encoder for fused tokens (when using text)
       - Perceiver Resampler for latent aggregation
       - Adversarial branch for sex confounding
+      
+    If text modality is disabled, the model uses only omics data.
     """
     def __init__(self, omics_dim: int = 512, text_dim: int = 768, fusion_dim: int = 256,
                  n_heads: int = 8, num_tokens: int = 8, num_latents: int = 32,
                  latent_dim: int = 128, dropout: float = 0.1, adv_lambda: float = 0.1,
-                 num_donors: int = 10) -> None:
+                 num_donors: int = 10, use_text: bool = True) -> None:
         super(MultiModalModel, self).__init__()
         self.num_tokens = num_tokens
         self.omics_token_dim = omics_dim // num_tokens  # e.g., 64 if omics_dim=512 and num_tokens=8
         self.text_token_dim = text_dim // num_tokens    # e.g., 96 if text_dim=768 and num_tokens=8
+        self.use_text = use_text
 
         # Project tokens into a common fusion space
         self.omics_token_proj = nn.Linear(self.omics_token_dim, fusion_dim)
-        self.text_token_proj = nn.Linear(self.text_token_dim, fusion_dim)
-
-        # Cross-attention: omics tokens query text tokens
-        self.cross_attn = CrossAttentionBlock(d_model=fusion_dim, n_heads=n_heads,
-                                              dropout=dropout, batch_first=True)
-
-        # Feed-forward network after cross-attention
-        self.ffn = nn.Sequential(
-            nn.Linear(fusion_dim, fusion_dim),
-            nn.ReLU(),
-            nn.Linear(fusion_dim, fusion_dim)
-        )
-
-        # Transformer encoder layer for additional refinement
-        self.transformer_encoder = nn.TransformerEncoderLayer(d_model=fusion_dim,
-                                                              nhead=n_heads,
-                                                              dropout=dropout,
-                                                              batch_first=True)
-
+        if self.use_text:
+            self.text_token_proj = nn.Linear(self.text_token_dim, fusion_dim)
+            # Cross-attention: omics tokens query text tokens
+            self.cross_attn = CrossAttentionBlock(d_model=fusion_dim, n_heads=n_heads,
+                                                  dropout=dropout, batch_first=True)
+            # Feed-forward network after cross-attention
+            self.ffn = nn.Sequential(
+                nn.Linear(fusion_dim, fusion_dim),
+                nn.ReLU(),
+                nn.Linear(fusion_dim, fusion_dim)
+            )
+            # Transformer encoder for additional refinement
+            self.transformer_encoder = nn.TransformerEncoderLayer(d_model=fusion_dim,
+                                                                  nhead=n_heads,
+                                                                  dropout=dropout,
+                                                                  batch_first=True)
         # Perceiver Resampler to aggregate fused features into latent representation
         self.resampler = PerceiverResampler(input_dim=fusion_dim,
                                             num_latents=num_latents,
@@ -309,30 +312,29 @@ class MultiModalModel(nn.Module):
         text:  [batch, text_dim]
         """
         batch_size = omics.size(0)
-
-        # Reshape omics and text into tokens
         omics_tokens = omics.view(batch_size, self.num_tokens, self.omics_token_dim)   # [B, 8, 64]
-        text_tokens = text.view(batch_size, self.num_tokens, self.text_token_dim)      # [B, 8, 96]
 
-        # Project tokens into the fusion space
-        omics_tokens = self.omics_token_proj(omics_tokens)  # [B, 8, fusion_dim]
-        text_tokens = self.text_token_proj(text_tokens)     # [B, 8, fusion_dim]
+        if self.use_text:
+            text_tokens = text.view(batch_size, self.num_tokens, self.text_token_dim)      # [B, 8, 96]
+            # Project tokens into the fusion space
+            omics_tokens_proj = self.omics_token_proj(omics_tokens)  # [B, 8, fusion_dim]
+            text_tokens_proj = self.text_token_proj(text_tokens)     # [B, 8, fusion_dim]
 
-        # Cross-attention: omics tokens (query) -> text tokens (key/value)
-        fused_tokens, attn_weights = self.cross_attn(omics_tokens, text_tokens, text_tokens)
-        fused_tokens = self.ffn(fused_tokens)
-        # Transformer encoder for additional refinement
-        fused_tokens = self.transformer_encoder(fused_tokens)
-        # fused_tokens shape: [batch, 8, fusion_dim]
+            # Cross-attention: omics tokens (query) -> text tokens (key/value)
+            fused_tokens, attn_weights = self.cross_attn(omics_tokens_proj, text_tokens_proj, text_tokens_proj)
+            fused_tokens = self.ffn(fused_tokens)
+            # Transformer encoder for additional refinement
+            fused_tokens = self.transformer_encoder(fused_tokens)
+        else:
+            # If text modality is disabled, use only omics tokens.
+            fused_tokens = self.omics_token_proj(omics_tokens)
+            # Dummy attention weights for consistency
+            attn_weights = torch.zeros(batch_size, 1, 1, 1, device=omics.device)
 
-        # Pass the entire fused token sequence into PerceiverResampler
+        # Pass the fused tokens into PerceiverResampler
         latent, attn_resampler = self.resampler(fused_tokens)
-        # latent: [batch, latent_dim]
-        # attn_resampler: [batch, n_heads, num_latents, seq_len=8]
-
         # Donor classification branch
         donor_logits = self.classifier(latent)
-
         # Adversarial branch with gradient reversal
         adv_input = grad_reverse(latent, self.adv_lambda)
         sex_logits = self.adv_classifier(adv_input)
@@ -414,11 +416,7 @@ def train_model(model: nn.Module,
                 save_checkpoints: bool = True) -> Tuple[List[float], List[float], List[float], List[int]]:
     """
     Train the multimodal model for a given number of epochs while evaluating on 
-    validation and test sets. If save_checkpoints is True, saves the model checkpoint at each epoch
-    into the specified output_dir and tracks the best test accuracy model.
-    
-    Returns:
-      - Lists of training accuracies, validation accuracies, test accuracies, and epoch numbers.
+    validation and test sets.
     """
     model.train()
     donor_criterion = nn.CrossEntropyLoss()
@@ -431,7 +429,6 @@ def train_model(model: nn.Module,
     patience_counter = 0
     prev_train_acc, prev_val_acc, prev_test_acc = None, None, None
 
-    # Ensure the output directory exists if saving checkpoints
     if save_checkpoints:
         os.makedirs(output_dir, exist_ok=True)
 
@@ -465,7 +462,6 @@ def train_model(model: nn.Module,
 
         epoch_train_acc = correct_train / total_train
 
-        # Evaluate on validation set
         if val_loader is not None:
             val_d_loss, val_a_loss, epoch_val_acc = evaluate_model_full(model, val_loader, accelerator)
         else:
@@ -473,7 +469,6 @@ def train_model(model: nn.Module,
             val_a_loss = 0.0
             epoch_val_acc = 0.0
 
-        # Evaluate on test set
         if test_loader is not None:
             test_d_loss, test_a_loss, epoch_test_acc = evaluate_model_full(model, test_loader, accelerator)
         else:
@@ -503,13 +498,11 @@ def train_model(model: nn.Module,
         test_accs.append(epoch_test_acc)
         epoch_list.append(epoch+1)
 
-        # Save model checkpoint for this epoch if enabled
         if save_checkpoints:
             epoch_checkpoint_path = os.path.join(output_dir, f"model_epoch_{epoch+1}.pt")
             torch.save(accelerator.unwrap_model(model).state_dict(), epoch_checkpoint_path)
             print(f"  [Checkpoint] Model saved to {epoch_checkpoint_path}")
 
-            # Track best test accuracy for final model selection and save best model
             if epoch_test_acc > best_test_acc:
                 best_test_acc = epoch_test_acc
                 best_epoch = epoch+1
@@ -517,7 +510,6 @@ def train_model(model: nn.Module,
                 torch.save(accelerator.unwrap_model(model).state_dict(), best_model_path)
                 print(f"  [Best] New best model at epoch {epoch+1} with test accuracy: {epoch_test_acc:.4f}")
 
-        # Early stopping: if training accuracy increases but both val and test accuracies drop
         if prev_train_acc is not None and prev_val_acc is not None and prev_test_acc is not None:
             if (epoch_train_acc > prev_train_acc and epoch_val_acc < prev_val_acc and epoch_test_acc < prev_test_acc):
                 patience_counter += 1
@@ -575,16 +567,66 @@ def save_model(model: nn.Module, output_dir: str, accelerator: Accelerator) -> N
     print(f"[Save] Model checkpoint saved to {save_path}")
 
 ##############################################################################
+#         Contrastive Pretraining Function for the Perceiver Resampler
+##############################################################################
+def pretrain_contrastive(model: MultiModalModel, dataloader: DataLoader,
+                         optimizer: optim.Optimizer, scheduler: torch.optim.lr_scheduler._LRScheduler,
+                         num_epochs: int, device: torch.device, temperature: float = 0.1) -> None:
+    """
+    Pretrain the omics and text projection modules using a contrastive loss.
+    For each batch, the positive pair is the omics and text representations (averaged over tokens)
+    for the same cell, and negatives are other samples in the batch.
+    """
+    model.train()
+    loss_fn = nn.CrossEntropyLoss()
+    for epoch in range(num_epochs):
+        running_loss = 0.0
+        for omics, text, _, _ in dataloader:
+            omics = omics.to(device)
+            text = text.to(device)
+            batch_size = omics.size(0)
+            # Compute omics representation
+            omics_tokens = omics.view(batch_size, model.num_tokens, model.omics_token_dim)
+            omics_tokens = omics_tokens.to(next(model.omics_token_proj.parameters()).device)
+            omics_repr = model.omics_token_proj(omics_tokens).mean(dim=1)  # [B, fusion_dim]
+            # Compute text representation only if text modality is enabled
+            if model.use_text:
+                text_tokens = text.view(batch_size, model.num_tokens, model.text_token_dim)
+                text_tokens = text_tokens.to(next(model.text_token_proj.parameters()).device)
+                text_repr = model.text_token_proj(text_tokens).mean(dim=1)  # [B, fusion_dim]
+            else:
+                continue  # Skip pretraining if text modality is disabled
+
+            # Normalize representations
+            omics_norm = nn.functional.normalize(omics_repr, p=2, dim=1)
+            text_norm = nn.functional.normalize(text_repr, p=2, dim=1)
+            # Compute similarity matrix
+            logits = torch.matmul(omics_norm, text_norm.T) / temperature  # [B, B]
+            logits = logits.to(device)
+            targets = torch.arange(batch_size, device=device)
+            loss_omics_to_text = loss_fn(logits, targets)
+            loss_text_to_omics = loss_fn(logits.T, targets)
+            loss = (loss_omics_to_text + loss_text_to_omics) / 2
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            running_loss += loss.item() * batch_size
+
+        avg_loss = running_loss / len(dataloader.dataset)
+        print(f"[Pretrain] Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
+
+##############################################################################
 #     Hyperparameter Optimization Objective Function (Optuna)
 ##############################################################################
 def objective(trial: optuna.trial.Trial) -> float:
     """
     Objective function for Optuna hyperparameter search.
-    Trains the model for 5 epochs on the training set and evaluates on the validation set.
+    Trains the model for 5 epochs (with optional pretraining) and evaluates on the validation set.
     Returns the negative validation accuracy.
-    Note: During Optuna testing, checkpoint saving is disabled.
     """
-    global train_dataloader, val_dataloader  # Use the split dataloaders
+    global train_dataloader, val_dataloader, USE_PRETRAIN
     lr = trial.suggest_loguniform("lr", 1e-5, 1e-2)
     dropout = trial.suggest_uniform("dropout", 0.1, 0.5)
     num_latents = trial.suggest_int("num_latents", 16, 64)
@@ -592,6 +634,7 @@ def objective(trial: optuna.trial.Trial) -> float:
     adv_lambda = trial.suggest_uniform("adv_lambda", 0.01, 0.5)
 
     num_donors = len(donor_map)
+    # Create a new model instance with the current hyperparameters and modality flag.
     model_instance = MultiModalModel(omics_dim=omics_data.shape[1],
                                      text_dim=textual_embeddings.shape[1],
                                      fusion_dim=256,
@@ -601,7 +644,20 @@ def objective(trial: optuna.trial.Trial) -> float:
                                      latent_dim=latent_dim,
                                      dropout=dropout,
                                      adv_lambda=adv_lambda,
-                                     num_donors=num_donors).to(accelerator.device)
+                                     num_donors=num_donors,
+                                     use_text=not args.disable_text_modality).to(accelerator.device)
+
+    # Optional pretraining phase
+    if USE_PRETRAIN and model_instance.use_text:
+        pretrain_epochs = 3
+        pretrain_optimizer = optim.Adam(model_instance.parameters(), lr=1e-4, weight_decay=1e-4)
+        total_steps_pretrain = len(train_dataloader) * pretrain_epochs
+        warmup_steps_pretrain = int(0.1 * total_steps_pretrain)
+        pretrain_scheduler = get_cosine_schedule_with_warmup(pretrain_optimizer,
+                                                             num_warmup_steps=warmup_steps_pretrain,
+                                                             num_training_steps=total_steps_pretrain)
+        pretrain_contrastive(model_instance, train_dataloader, pretrain_optimizer, pretrain_scheduler,
+                             num_epochs=pretrain_epochs, device=accelerator.device)
 
     optimizer_instance = optim.Adam(model_instance.parameters(), lr=lr, weight_decay=1e-4)
     total_steps = len(train_dataloader) * 5  # Quick tuning over 5 epochs
@@ -630,24 +686,29 @@ def objective(trial: optuna.trial.Trial) -> float:
 ##############################################################################
 def main() -> None:
     """
-    Main function to run the training pipeline:
-      1. Parse arguments and set random seeds.
+    Main function to run the training pipeline.
+    Steps:
+      1. Parse arguments and set seeds.
       2. Initialize Accelerator.
       3. Load data and generate UMAP visualization.
       4. Extract textual embeddings.
       5. Build label mappings and create dataset.
-      6. Split the dataset into training, validation, and test sets.
-      7. Depending on --search-hparams, either run Optuna or load best hyperparams.
-      8. Depending on --train-model, either train the model or load final_model.pt.
-      9. Evaluate the final (best) model on the test set, generate sample predictions,
-         produce cross-attention heatmap, and save final results.
+      6. Split dataset into training, validation, and test sets.
+      7. Run hyperparameter search (or load best hyperparameters).
+      8. (Optional) Pretrain the Perceiver Resampler if flagged.
+      9. Train final model (or load final_model.pt).
+     10. Evaluate the final model, print sample predictions, and generate outputs.
+     11. Print analysis regarding pretraining and use of cell type labels.
     """
     global textual_embeddings, accelerator, omics_data
-    global train_dataloader, val_dataloader, test_dataloader, donor_map
+    global train_dataloader, val_dataloader, test_dataloader, donor_map, USE_PRETRAIN, args
 
     args = parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+
+    # Set global flag for pretraining
+    USE_PRETRAIN = args.pretrain_resampler
 
     # Initialize Accelerator for distributed training
     accelerator = Accelerator()
@@ -661,12 +722,18 @@ def main() -> None:
                                  args.measurement_name,
                                  args.output_dir)
 
-    # 2. Extract textual embeddings from cell type labels
-    print("Extracting Textual Embeddings...")
-    textual_embeddings = extract_textual_embeddings(adata,
-                                                    args.local_model_path,
-                                                    accelerator.device)
-    print("Textual Embeddings Extracted!!!")
+    # 2. Extract textual embeddings (only if text modality is enabled)
+    if not args.disable_text_modality:
+        print("Extracting Textual Embeddings...")
+        textual_embeddings_local = extract_textual_embeddings(adata,
+                                                              args.local_model_path,
+                                                              accelerator.device)
+        textual_embeddings = textual_embeddings_local
+        print("Textual Embeddings Extracted!!!")
+    else:
+        # If text modality is disabled, create a dummy textual embedding (zeros)
+        textual_embeddings = np.zeros((adata.n_obs, 768))
+        print("[Text] Text modality disabled; using dummy embeddings.")
 
     # 3. Build label mappings for donors and sex
     donor_map = {donor: i for i, donor in enumerate(pd.unique(adata.obs["donor_id"]))}
@@ -690,13 +757,12 @@ def main() -> None:
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
-
-    # Prepare dataloaders with Accelerator (prepare all splits)
     train_dataloader, val_dataloader, test_dataloader = accelerator.prepare(train_dataloader, val_dataloader, test_dataloader)
 
     # 7. Hyperparameter search or load best hyperparameters
     storage_name = "sqlite:///optuna_study.db"
     study_name = "multimodal_study"
+    best_hp_path = os.path.join(args.output_dir, "best_hyperparameters.json")
     if args.search_hparams:
         print("[Main] Running Optuna hyperparameter search...")
         study = optuna.create_study(direction="minimize",
@@ -707,24 +773,36 @@ def main() -> None:
         accelerator.wait_for_everyone()
         best_params = study.best_params
         current_best_acc = -study.best_value
-        # Save best hyperparameters to disk
-        best_hp_path = os.path.join(args.output_dir, "best_hyperparameters.json")
-        final_hp_results = {"best_params": best_params, "final_validation_accuracy": current_best_acc}
         with open(best_hp_path, "w") as f:
-            json.dump(final_hp_results, f, indent=4)
+            json.dump({"best_params": best_params, "final_validation_accuracy": current_best_acc}, f, indent=4)
         print(f"[Main] Best hyperparameters saved to {best_hp_path}")
-        print(f"[Optuna] Best hyperparameters from Optuna: {best_params} with validation accuracy {current_best_acc:.4f}")
+        print(f"[Optuna] Best hyperparameters: {best_params} with validation accuracy {current_best_acc:.4f}")
     else:
         print("[Main] Loading best hyperparameters from best_hyperparameters.json...")
-        best_hp_path = os.path.join(args.output_dir, "best_hyperparameters.json")
-        with open(best_hp_path, "r") as f:
-            loaded_hp = json.load(f)
-        best_params = loaded_hp["best_params"]
-        current_best_acc = loaded_hp.get("final_validation_accuracy", 0.0)
-        if not current_best_acc: current_best_acc = 0.0000000
+        if not os.path.exists(best_hp_path):
+            print("[Main] best_hyperparameters.json not found. Using default hyperparameters.")
+            best_params = {
+                "lr": 0.0005947012811791727,
+                "dropout": 0.11378010821029086,
+                "num_latents": 61,
+                "latent_dim": 256,
+                "adv_lambda": 0.35824957883020864
+            }
+            current_best_acc = 0.0
+        else:
+            with open(best_hp_path, "r") as f:
+                loaded_hp = json.load(f)
+            best_params = loaded_hp.get("best_params", {
+                "lr": 0.0005947012811791727,
+                "dropout": 0.11378010821029086,
+                "num_latents": 61,
+                "latent_dim": 256,
+                "adv_lambda": 0.35824957883020864
+            })
+            current_best_acc = loaded_hp.get("final_test_accuracy", 0.0)
         print(f"[Main] Loaded best hyperparameters: {best_params}, with val acc: {current_best_acc:.4f}")
 
-    # 8. Train final model (if --train-model) or load final_model.pt
+    # 8. Create final model instance with the best hyperparameters and modality flag.
     num_donors = len(donor_map)
     model = MultiModalModel(
         omics_dim=omics_data.shape[1],
@@ -736,32 +814,39 @@ def main() -> None:
         latent_dim=best_params["latent_dim"],
         dropout=best_params["dropout"],
         adv_lambda=best_params["adv_lambda"],
-        num_donors=num_donors
+        num_donors=num_donors,
+        use_text=not args.disable_text_modality
     )
 
     if args.use_wandb:
         wandb.init(project="cz-biohub-test", config=best_params, reinit=True)
 
+    # 9. (Optional) Pretrain the model if flagged
+    if args.pretrain_resampler and accelerator.unwrap_model(model).use_text:
+        print("[Main] Starting pretraining phase for the Perceiver Resampler...")
+        pretrain_epochs = 3
+        pretrain_optimizer = optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)
+        total_steps_pretrain = len(train_dataloader) * pretrain_epochs
+        warmup_steps_pretrain = int(0.1 * total_steps_pretrain)
+        pretrain_scheduler = get_cosine_schedule_with_warmup(pretrain_optimizer,
+                                                             num_warmup_steps=warmup_steps_pretrain,
+                                                             num_training_steps=total_steps_pretrain)
+        pretrain_contrastive(model, train_dataloader, pretrain_optimizer, pretrain_scheduler,
+                             num_epochs=pretrain_epochs, device=accelerator.device)
+        print("[Main] Pretraining completed.")
+
+    # 10. Train final model (if --train-model) or load final_model.pt
     if args.train_model:
-        print("[Main] Training the model with best hyperparameters...")
+        print("[Main] Training the final model with best hyperparameters...")
         optimizer = optim.Adam(model.parameters(), lr=best_params["lr"], weight_decay=1e-4)
         total_steps = len(train_dataloader) * args.num_epochs
         warmup_steps = int(0.1 * total_steps)
         scheduler = get_cosine_schedule_with_warmup(optimizer,
                                                     num_warmup_steps=warmup_steps,
                                                     num_training_steps=total_steps)
-
-        # Prepare model, optimizer, and training dataloader with Accelerator
-        model, optimizer, train_dataloader, scheduler = accelerator.prepare(model,
-                                                                            optimizer,
-                                                                            train_dataloader,
-                                                                            scheduler)
-
-        # Create a temporary directory for saving checkpoints during training
+        model, optimizer, train_dataloader, scheduler = accelerator.prepare(model, optimizer, train_dataloader, scheduler)
         temp_dir = os.path.join(args.output_dir, "temp")
         os.makedirs(temp_dir, exist_ok=True)
-
-        # Train the model
         train_accs, val_accs, test_accs, epochs_trained = train_model(
             model,
             train_dataloader,
@@ -776,8 +861,6 @@ def main() -> None:
             early_stopping_patience=3,
             save_checkpoints=True
         )
-
-        # Plot and save training curves
         training_curves_path = os.path.join(args.output_dir, "training_curves.png")
         plt.figure(figsize=(12, 6))
         plt.plot(epochs_trained, train_accs, label="Train Accuracy")
@@ -791,37 +874,29 @@ def main() -> None:
         plt.savefig(training_curves_path)
         plt.close()
         print(f"[Main] Training curves saved to {training_curves_path}")
-
-        # Load the best model from training
         best_model_path = os.path.join(temp_dir, "best_model.pt")
         best_model_state = torch.load(best_model_path, map_location=accelerator.device)
         accelerator.unwrap_model(model).load_state_dict(best_model_state)
         print(f"[Main] Loaded best model from {best_model_path} for final evaluation.")
     else:
         print("[Main] Skipping training. Loading final_model.pt...")
-        # Move model to accelerator device
         model = model.to(accelerator.device)
-        # Load final_model directly
         final_model_path = os.path.join(args.output_dir, "final_model.pt")
         if not os.path.isfile(final_model_path):
-            raise FileNotFoundError(f"final_model.pt not found in {args.output_dir}. "
-                                    "Please run with --train-model at least once.")
+            raise FileNotFoundError(f"final_model.pt not found in {args.output_dir}. Please run with --train-model at least once.")
         model_state = torch.load(final_model_path, map_location=accelerator.device)
         model.load_state_dict(model_state)
         print(f"[Main] Loaded final model from {final_model_path}.")
 
-    # 9. Evaluate the final (best) model on the test set
+    # 11. Evaluate final model
     model.eval()
-    model = accelerator.prepare(model)  # Ensure model is prepared for distributed
-
+    model = accelerator.prepare(model)
     final_test_donor_loss, final_test_adv_loss, final_test_acc = evaluate_model_full(model, test_dataloader, accelerator)
     print(f"[Test] Final Test Donor Loss: {final_test_donor_loss:.4f}, Adv Loss: {final_test_adv_loss:.4f}, Accuracy: {final_test_acc:.4f}")
 
-    # Print sample predictions
     donor_inv_map = {v: k for k, v in donor_map.items()}
     sample_predictions(model, test_dataloader, accelerator, donor_inv_map, num_samples=5)
 
-    # Save final results to best_hyperparameters.json
     best_hp_path = os.path.join(args.output_dir, "best_hyperparameters.json")
     if os.path.isfile(best_hp_path):
         with open(best_hp_path, "r") as f:
@@ -831,8 +906,8 @@ def main() -> None:
 
     final_results.update({
         "best_params": best_params,
-        "final_train_accuracy": None,  # We can store last train acc if needed
-        "final_validation_accuracy": None,  # We can store last val acc if needed
+        "final_train_accuracy": None,
+        "final_validation_accuracy": None,
         "final_test_accuracy": final_test_acc,
         "final_test_donor_loss": final_test_donor_loss,
         "final_test_adv_loss": final_test_adv_loss
@@ -842,42 +917,26 @@ def main() -> None:
         json.dump(final_results, f, indent=4)
     print(f"[Main] Best hyperparameters and final results saved to {best_hp_path}")
 
-    # Save final model checkpoint if we trained
     if args.train_model:
         save_model(model, args.output_dir, accelerator)
 
-    # Generate a cross-attention heatmap from a single sample in the test set
+    # Generate cross-attention heatmap from a sample of the test set
     single_loader = DataLoader(test_dataset, batch_size=1, shuffle=True)
     single_loader = accelerator.prepare(single_loader)
     sample_omics, sample_text, _, _ = next(iter(single_loader))
     sample_omics = sample_omics.to(accelerator.device)
     sample_text = sample_text.to(accelerator.device)
-
     with torch.no_grad():
         _, _, _, attn_resampler = model(sample_omics, sample_text)
-        # Debug print to see the actual shape
         print(f"[Debug] attn_resampler shape: {attn_resampler.shape}")
-
-        # If it's 4D, typical shape is [batch, n_heads, num_latents, seq_len].
-        # If it's 3D, shape might be [batch, query_len, key_len] or [batch, combined, seq_len].
         if attn_resampler.dim() == 4:
-            # Example shape: [1, n_heads, num_latents, seq_len]
-            attn_resampler = attn_resampler[0]  # shape: [n_heads, num_latents, seq_len]
-            avg_attn = attn_resampler.mean(dim=0).detach().cpu().numpy()  # shape: [num_latents, seq_len]
+            attn_resampler = attn_resampler[0]
+            avg_attn = attn_resampler.mean(dim=0).detach().cpu().numpy()
         elif attn_resampler.dim() == 3:
-            # Example shape: [1, something, something].
-            # We'll remove the batch dim and assume the result is [X, Y].
-            # This produces a 2D matrix for the heatmap:
-            attn_resampler = attn_resampler[0]  # shape now [something, something]
+            attn_resampler = attn_resampler[0]
             avg_attn = attn_resampler.detach().cpu().numpy()
-            # Optionally, you can check if the user wants to average along one dimension.
-            # But at minimum, we can visualize the 2D matrix directly.
         else:
-            raise ValueError(
-                f"Unexpected shape for attn_resampler: {attn_resampler.shape}. "
-                "Expected either 3D or 4D."
-            )
-
+            raise ValueError(f"Unexpected shape for attn_resampler: {attn_resampler.shape}.")
     cross_attn_path = os.path.join(args.output_dir, "perceiver_attention_heatmap.png")
     plt.figure(figsize=(6, 5))
     plt.imshow(avg_attn, cmap="viridis", aspect="auto")
@@ -888,8 +947,7 @@ def main() -> None:
     plt.savefig(cross_attn_path)
     plt.close()
     print(f"[Main] Perceiver cross-attention heatmap saved to {cross_attn_path}")
-    
-    # Finish wandb if used
+
     if args.use_wandb:
         wandb.log({
             "final_test_accuracy": final_test_acc,
@@ -898,7 +956,7 @@ def main() -> None:
         })
         wandb.finish()
 
-    # Print final summary
+    # 12. Final Summary and Bonus Analysis Statements
     print("\n[Main] Final Results Summary:")
     print(f" - Number of cells loaded: {adata.n_obs}")
     print(f" - UMAP plot saved at: {umap_path}")
@@ -908,6 +966,17 @@ def main() -> None:
     print(f" - Final Test Accuracy: {final_test_acc:.4f}")
     print(f" - Final Test Donor Loss: {final_test_donor_loss:.4f}")
     print(f" - Final Test Adv Loss: {final_test_adv_loss:.4f}")
+    
+    # Bonus Analysis Output:
+    if args.pretrain_resampler and accelerator.unwrap_model(model).use_text:
+        print("Analysis: Pretraining of the Perceiver Resampler was performed. To assess its impact, compare these results with a run without pretraining.")
+    else:
+        print("Analysis: No pretraining was performed for the Perceiver Resampler.")
+    
+    if args.disable_text_modality:
+        print("Analysis: The model was trained using only omics data. Compare these results with a run using both modalities to determine the impact of cell type label information.")
+    else:
+        print("Analysis: The model incorporated both omics and cell type label information. Compare these results with an omics-only run to assess the benefit of textual data.")
 
 if __name__ == "__main__":
     main()

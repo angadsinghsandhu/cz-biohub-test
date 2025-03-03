@@ -16,7 +16,7 @@
 #SBATCH --cpus-per-task=10
 
 #### Job-specific info
-#SBATCH --job-name="multimodal_train"
+#SBATCH --job-name="cz"
 #SBATCH --output="./out/cz-%j.out"
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=asandhu9@jh.edu
@@ -84,8 +84,8 @@ start_time=$(date +%s)
 
 INFER_SCRIPT="main.py"
 SCRIPT_ARGS="--census-version 2023-12-15 --organism homo_sapiens --measurement-name RNA \
---output-dir output --batch-size 64 --num-epochs 50 --local-model-path /home/asandhu9/cz-biohub-test/models/dmis-lab/biobert/1.1 --use-wandb"
-"--search-hparams --train-model"
+--output-dir output --batch-size 64 --num-epochs 50 --local-model-path /home/asandhu9/cz-biohub-test/models/dmis-lab/biobert/1.1 --use-wandb \
+--search-hparams --disable-text-modality --train-model"
 
 srun python -m accelerate.commands.launch \
     --num_processes=${NUM_PROCESSES} \
